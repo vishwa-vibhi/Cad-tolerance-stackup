@@ -1,0 +1,14 @@
+cad_env/
+__pycache__/
+*.pyc
+*.pth
+*.pt
+*.onnx
+.env
+results/
+*.egg-info/
+.ipynb_checkpoints/
+*.jpg
+*.png
+*.jpeg
+data/
