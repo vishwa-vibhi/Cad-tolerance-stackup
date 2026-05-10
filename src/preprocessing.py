@@ -1,3 +1,9 @@
+"""
+Stage 1: Preprocessing
+Cleans up engineering drawing screenshots before sending to VLM.
+Pure OpenCV - no smart logic, just reliable cleanup.
+"""
+
 import cv2
 import numpy as np
 import os
@@ -5,6 +11,7 @@ import sys
 
 
 def load_image(image_path):
+    """Load image from disk."""
     img = cv2.imread(image_path)
     if img is None:
         raise ValueError(f"Could not load image: {image_path}")
@@ -13,73 +20,70 @@ def load_image(image_path):
 
 
 def to_grayscale(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    print(f"  Grayscale: done")
-    return gray
+    """Convert to grayscale - we don't need color."""
+    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 
 def denoise(gray):
-    denoised = cv2.GaussianBlur(gray, (3, 3), 0)
-    print(f"  Denoise: done")
-    return denoised
+    """Gentle Gaussian blur to remove screenshot noise."""
+    return cv2.GaussianBlur(gray, (3, 3), 0)
 
 
 def binarize(gray):
-    _, binary = cv2.threshold(
-        gray, 0, 255,
-        cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    """
+    Adaptive threshold - handles uneven brightness across the page.
+    Better than Otsu for screenshots.
+    """
+    binary = cv2.adaptiveThreshold(
+        gray, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=15,
+        C=10
     )
-    print(f"  Binarize: done")
     return binary
 
 
-def deskew(binary):
-    coords = np.column_stack(np.where(binary < 128))
-    if len(coords) == 0:
-        return binary
-    angle = cv2.minAreaRect(coords)[-1]
-    if angle < -45:
-        angle = 90 + angle
-    if abs(angle) < 0.5:
-        print(f"  Deskew: no tilt detected")
-        return binary
+def remove_frame(binary, margin_percent=0.02):
+    """
+    Crop a small margin from the edges.
+    Removes scanner edges, screenshot borders, etc.
+    """
     h, w = binary.shape
-    center = (w // 2, h // 2)
-    M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated = cv2.warpAffine(
-        binary, M, (w, h),
-        flags=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_REPLICATE
-    )
-    print(f"  Deskew: corrected {angle:.2f} degrees")
-    return rotated
+    mh = int(h * margin_percent)
+    mw = int(w * margin_percent)
+    return binary[mh:h-mh, mw:w-mw]
 
 
-def morphological_cleanup(binary):
+def cleanup_morphology(binary):
+    """Close tiny gaps in lines, remove tiny dots."""
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
-    print(f"  Morphological cleanup: done")
     return cleaned
 
 
 def preprocess(image_path, save_result=True, output_dir="results"):
+    """Main preprocessing pipeline."""
     print(f"\nProcessing: {os.path.basename(image_path)}")
-    print("-" * 40)
+    print("-" * 50)
+
     img      = load_image(image_path)
     gray     = to_grayscale(img)
     denoised = denoise(gray)
     binary   = binarize(denoised)
-    deskewed = deskew(binary)
-    cleaned  = morphological_cleanup(deskewed)
+    cropped  = remove_frame(binary)
+    cleaned  = cleanup_morphology(cropped)
+
+    print(f"  Final size: {cleaned.shape[1]}x{cleaned.shape[0]}")
+
     if save_result:
         os.makedirs(output_dir, exist_ok=True)
         filename = os.path.splitext(os.path.basename(image_path))[0]
-        out_path = os.path.join(output_dir, f"{filename}_preprocessed.png")
+        out_path = os.path.join(output_dir, f"{filename}_clean.png")
         cv2.imwrite(out_path, cleaned)
-        print(f"  Saved to: {out_path}")
-    print("-" * 40)
-    print(f"Preprocessing complete.")
+        print(f"  Saved: {out_path}")
+
+    print("-" * 50)
     return cleaned
 
 
@@ -87,5 +91,5 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python src/preprocessing.py <image_path>")
     else:
-        result = preprocess(sys.argv[1])
-        print(f"Output shape: {result.shape}")
+        preprocess(sys.argv[1])
+        print("Done.")
