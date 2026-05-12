@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CAD Tolerance Stack-Up Analysis Tool</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; }
+
+  /* Header */
+  .header { background: linear-gradient(135deg, #1a1f2e, #252b3b); padding: 20px 32px; border-bottom: 1px solid #2d3448; display: flex; align-items: center; gap: 16px; }
+  .header h1 { font-size: 1.4rem; font-weight: 600; color: #fff; }
+  .header .subtitle { font-size: 0.8rem; color: #8892a4; margin-top: 2px; }
+  .badge { background: #2563eb; color: #fff; font-size: 0.7rem; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
+
+  /* Layout */
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px 32px; }
+
+  /* Upload zone */
+  .upload-zone { border: 2px dashed #2d3448; border-radius: 12px; padding: 48px; text-align: center; cursor: pointer; transition: all 0.2s; background: #141820; }
+  .upload-zone:hover, .upload-zone.drag-over { border-color: #2563eb; background: #1a2035; }
+  .upload-zone .icon { font-size: 3rem; margin-bottom: 12px; }
+  .upload-zone h2 { font-size: 1.1rem; color: #c0c8d8; margin-bottom: 8px; }
+  .upload-zone p { font-size: 0.85rem; color: #6b7280; }
+  .upload-zone input[type=file] { display: none; }
+  .btn { display: inline-block; padding: 10px 24px; border-radius: 8px; font-size: 0.9rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
+  .btn-primary { background: #2563eb; color: #fff; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .btn-secondary { background: #1e2535; color: #c0c8d8; border: 1px solid #2d3448; }
+  .btn-secondary:hover { background: #252b3b; }
+
+  /* Progress */
+  .progress-bar { height: 4px; background: #1e2535; border-radius: 2px; overflow: hidden; margin: 16px 0; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #2563eb, #7c3aed); border-radius: 2px; transition: width 0.3s; }
+  .status-text { font-size: 0.85rem; color: #8892a4; text-align: center; }
+
+  /* Results grid */
+  .results-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 24px; }
+  .results-grid.full { grid-template-columns: 1fr; }
+  @media (max-width: 900px) { .results-grid { grid-template-columns: 1fr; } }
+
+  /* Cards */
+  .card { background: #141820; border: 1px solid #2d3448; border-radius: 12px; overflow: hidden; }
+  .card-header { padding: 14px 18px; background: #1a1f2e; border-bottom: 1px solid #2d3448; display: flex; align-items: center; justify-content: space-between; }
+  .card-header h3 { font-size: 0.9rem; font-weight: 600; color: #c0c8d8; }
+  .card-body { padding: 16px 18px; }
+
+  /* Image display */
+  .img-container { position: relative; }
+  .img-container img { width: 100%; border-radius: 8px; display: block; }
+  .img-tabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .img-tab { padding: 5px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer; border: 1px solid #2d3448; background: #1e2535; color: #8892a4; transition: all 0.15s; }
+  .img-tab.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+
+  /* Stats row */
+  .stats-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .stat-box { background: #1a1f2e; border: 1px solid #2d3448; border-radius: 8px; padding: 10px 16px; flex: 1; min-width: 80px; text-align: center; }
+  .stat-box .val { font-size: 1.4rem; font-weight: 700; color: #fff; }
+  .stat-box .lbl { font-size: 0.72rem; color: #6b7280; margin-top: 2px; }
+
+  /* Table */
+  .data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .data-table th { background: #1a1f2e; color: #8892a4; font-weight: 600; padding: 8px 12px; text-align: left; border-bottom: 1px solid #2d3448; }
+  .data-table td { padding: 7px 12px; border-bottom: 1px solid #1e2535; color: #c0c8d8; }
+  .data-table tr:hover td { background: #1a1f2e; }
+  .table-wrap { max-height: 320px; overflow-y: auto; border-radius: 8px; border: 1px solid #2d3448; }
+
+  /* Type badges */
+  .type-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; }
+  .t-dimension_value    { background: #1e3a5f; color: #60a5fa; }
+  .t-diameter_callout   { background: #1e3a5f; color: #34d399; }
+  .t-radius_callout     { background: #1e3a5f; color: #34d399; }
+  .t-thread_spec        { background: #3b1f5f; color: #a78bfa; }
+  .t-tolerance          { background: #5f1e1e; color: #f87171; }
+  .t-balloon_number     { background: #1e3a2f; color: #6ee7b7; }
+  .t-part_name          { background: #3b2f1e; color: #fbbf24; }
+  .t-material_code      { background: #2f1e3b; color: #c084fc; }
+  .t-material_name      { background: #2f1e3b; color: #c084fc; }
+  .t-bom_header         { background: #1e2f3b; color: #7dd3fc; }
+  .t-section_marker     { background: #1e3b2f; color: #4ade80; }
+  .t-hole_callout       { background: #3b2f1e; color: #fb923c; }
+  .t-unknown            { background: #2a2a2a; color: #6b7280; }
+  .t-quantity           { background: #1e3a5f; color: #93c5fd; }
+  .t-dimension_with_note { background: #1e3a5f; color: #60a5fa; }
+  .t-spacing_annotation { background: #1e3b2f; color: #4ade80; }
+
+  /* Confidence bar */
+  .conf-bar { display: flex; align-items: center; gap: 6px; }
+  .conf-fill { height: 4px; border-radius: 2px; background: #2563eb; }
+  .conf-text { font-size: 0.72rem; color: #6b7280; min-width: 32px; }
+
+  /* BOM table */
+  .bom-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .bom-table th { background: #1a1f2e; color: #8892a4; padding: 8px 12px; text-align: left; border-bottom: 1px solid #2d3448; }
+  .bom-table td { padding: 7px 12px; border-bottom: 1px solid #1e2535; }
+  .bom-table .part-no { color: #60a5fa; font-weight: 700; }
+  .bom-table .part-name { color: #fbbf24; }
+  .bom-table .material { color: #c084fc; }
+  .bom-table .qty { color: #34d399; text-align: center; }
+  .null-val { color: #374151; font-style: italic; }
+
+  /* Stack-up */
+  .stackup-box { background: #1a1f2e; border: 1px solid #2d3448; border-radius: 8px; padding: 16px; }
+  .stackup-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1e2535; font-size: 0.85rem; }
+  .stackup-row:last-child { border-bottom: none; }
+  .stackup-label { color: #8892a4; }
+  .stackup-value { color: #fff; font-weight: 600; font-family: monospace; }
+  .stackup-value.highlight { color: #f59e0b; }
+
+  /* Parts list */
+  .part-card { background: #1a1f2e; border: 1px solid #2d3448; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .part-card .part-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .part-no-badge { background: #2563eb; color: #fff; font-size: 0.75rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+  .part-name-text { font-weight: 600; color: #fbbf24; font-size: 0.9rem; }
+  .part-material { font-size: 0.78rem; color: #c084fc; }
+  .dim-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .dim-chip { background: #1e2535; border: 1px solid #2d3448; border-radius: 6px; padding: 3px 8px; font-size: 0.75rem; color: #c0c8d8; font-family: monospace; }
+
+  /* Download buttons */
+  .download-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
+  /* Hidden */
+  .hidden { display: none; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #1a1f2e; }
+  ::-webkit-scrollbar-thumb { background: #2d3448; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>⚙️ CAD Tolerance Stack-Up Analysis Tool</h1>
+    <div class="subtitle">CV-first pipeline · EasyOCR · OpenCV · Stage 1–5</div>
+  </div>
+  <span class="badge">Final Project</span>
+</div>
+
+<div class="container">
+
+  <!-- Upload Section -->
+  <div id="upload-section">
+    <div class="upload-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <div class="icon">📐</div>
+      <h2>Upload Engineering Drawing</h2>
+      <p>Drag & drop a PNG/JPG image, or click to browse</p>
+      <p style="margin-top:8px; font-size:0.78rem; color:#4b5563;">Supports: part drawings (Cat 1), assembly drawings (Cat 2), assembly views (Cat 3)</p>
+      <input type="file" id="file-input" accept=".png,.jpg,.jpeg" onchange="handleFileSelect(this)">
+      <div style="margin-top:20px;">
+        <button class="btn btn-primary" onclick="event.stopPropagation(); document.getElementById('file-input').click()">Choose File</button>
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div id="progress-section" class="hidden" style="margin-top:20px;">
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+      <p class="status-text" id="status-text">Initializing...</p>
+    </div>
+  </div>
+
+  <!-- Results Section -->
+  <div id="results-section" class="hidden">
+
+    <!-- Top bar -->
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+      <div>
+        <h2 style="font-size:1.1rem; color:#fff;">Analysis Results</h2>
+        <p id="result-meta" style="font-size:0.82rem; color:#6b7280; margin-top:4px;"></p>
+      </div>
+      <button class="btn btn-secondary" onclick="resetUI()">← New Analysis</button>
+    </div>
+
+    <!-- Stats row -->
+    <div class="stats-row" id="stats-row"></div>
+
+    <!-- Main grid -->
+    <div class="results-grid">
+
+      <!-- Image viewer -->
+      <div class="card">
+        <div class="card-header">
+          <h3>📷 Visualization</h3>
+          <div class="img-tabs" id="img-tabs"></div>
+        </div>
+        <div class="card-body">
+          <div class="img-container">
+            <img id="main-image" src="" alt="Drawing">
+          </div>
+        </div>
+      </div>
+
+      <!-- Annotations table -->
+      <div class="card">
+        <div class="card-header">
+          <h3>🏷️ Detected Annotations</h3>
+          <span id="ann-count" style="font-size:0.78rem; color:#6b7280;"></span>
+        </div>
+        <div class="card-body">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr><th>#</th><th>Text</th><th>Type</th><th>Confidence</th></tr></thead>
+              <tbody id="ann-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Second row -->
+    <div class="results-grid" style="margin-top:20px;" id="second-row">
+
+      <!-- Parts attribution -->
+      <div class="card" id="parts-card">
+        <div class="card-header"><h3>🔩 Part Attribution</h3></div>
+        <div class="card-body" id="parts-body"></div>
+      </div>
+
+      <!-- BOM / Stack-up -->
+      <div class="card" id="bom-stackup-card">
+        <div class="card-header"><h3 id="bom-stackup-title">📋 BOM & Stack-Up</h3></div>
+        <div class="card-body" id="bom-stackup-body"></div>
+      </div>
+
+    </div>
+
+    <!-- Downloads -->
+    <div class="card" style="margin-top:20px;">
+      <div class="card-header"><h3>⬇️ Download Results</h3></div>
+      <div class="card-body">
+        <div class="download-row" id="download-row"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+let currentJobId = null;
+let availableImages = {};
+
+// ── Drag & Drop ──────────────────────────────────────────────────────────────
+const dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+});
+
+function handleFileSelect(input) {
+  if (input.files[0]) uploadFile(input.files[0]);
+}
+
+// ── Upload & Analyse ─────────────────────────────────────────────────────────
+function uploadFile(file) {
+  document.getElementById('progress-section').classList.remove('hidden');
+  setProgress(5, 'Uploading image...');
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  // Simulate progress while waiting
+  let prog = 5;
+  const stages = [
+    [15, 'Stage 1: Preprocessing...'],
+    [30, 'Stage 2: OCR (EasyOCR)...'],
+    [55, 'Stage 3: Classification...'],
+    [70, 'Stage 4: Geometric Association...'],
+    [82, 'Part Attribution...'],
+    [90, 'Tolerance Stack-Up...'],
+    [95, 'Building results...'],
+  ];
+  let si = 0;
+  const timer = setInterval(() => {
+    if (si < stages.length) {
+      setProgress(stages[si][0], stages[si][1]);
+      si++;
+    }
+  }, 1800);
+
+  fetch('/analyse', { method: 'POST', body: formData })
+    .then(r => r.json())
+    .then(data => {
+      clearInterval(timer);
+      if (data.error) {
+        setProgress(0, '❌ Error: ' + data.error);
+        return;
+      }
+      setProgress(100, '✅ Analysis complete!');
+      setTimeout(() => renderResults(data), 400);
+    })
+    .catch(err => {
+      clearInterval(timer);
+      setProgress(0, '❌ Network error: ' + err.message);
+    });
+}
+
+function setProgress(pct, text) {
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('status-text').textContent = text;
+}
+
+// ── Render Results ───────────────────────────────────────────────────────────
+function renderResults(data) {
+  currentJobId = data.job_id;
+  availableImages = data.images || {};
+
+  document.getElementById('upload-section').classList.add('hidden');
+  document.getElementById('results-section').classList.remove('hidden');
+
+  const stages = data.stages || {};
+  const ocr = stages.ocr || {};
+  const val = stages.validation || {};
+  const assoc = stages.association || {};
+  const attr = stages.attribution || {};
+  const stackup = stages.stackup || {};
+  const cat = val.image_category || 0;
+
+  // Meta
+  document.getElementById('result-meta').textContent =
+    `Job: ${data.job_id} · Category ${cat} drawing · Processed in ${data.elapsed_sec}s`;
+
+  // Stats
+  const statsData = [
+    { val: ocr.detections || 0,       lbl: 'OCR Detections' },
+    { val: val.total || 0,             lbl: 'Classified' },
+    { val: assoc.matched || 0,         lbl: 'Associated' },
+    { val: attr.named || 0,            lbl: 'Parts Named' },
+    { val: stackup.dimensions || 0,    lbl: 'Dimensions' },
+    { val: stackup.tolerances || 0,    lbl: 'Tolerances' },
+  ];
+  document.getElementById('stats-row').innerHTML = statsData.map(s =>
+    `<div class="stat-box"><div class="val">${s.val}</div><div class="lbl">${s.lbl}</div></div>`
+  ).join('');
+
+  // Image tabs
+  const imgTabs = document.getElementById('img-tabs');
+  const imgMap = { 'original': 'Original', 'fullocr': 'OCR', 'associations': 'Associations' };
+  imgTabs.innerHTML = '';
+  let firstImg = null;
+  for (const [key, label] of Object.entries(imgMap)) {
+    if (availableImages[key]) {
+      const tab = document.createElement('div');
+      tab.className = 'img-tab' + (firstImg === null ? ' active' : '');
+      tab.textContent = label;
+      tab.onclick = () => switchImage(key, tab);
+      imgTabs.appendChild(tab);
+      if (firstImg === null) {
+        firstImg = key;
+        document.getElementById('main-image').src = availableImages[key];
+      }
+    }
+  }
+
+  // Annotations table
+  const classified = val.classified || [];
+  document.getElementById('ann-count').textContent = `${classified.length} entries`;
+  const tbody = document.getElementById('ann-table-body');
+  tbody.innerHTML = classified.map((e, i) => {
+    const conf = (e.confidence * 100).toFixed(0);
+    const barW = Math.round(e.confidence * 60);
+    return `<tr>
+      <td style="color:#4b5563">${e.id}</td>
+      <td style="font-family:monospace; color:#e0e0e0">${escHtml(e.text)}</td>
+      <td><span class="type-badge t-${e.type}">${e.type.replace(/_/g,' ')}</span></td>
+      <td><div class="conf-bar"><div class="conf-fill" style="width:${barW}px"></div><span class="conf-text">${conf}%</span></div></td>
+    </tr>`;
+  }).join('');
+
+  // Parts attribution
+  const parts = attr.parts_summary || [];
+  const partsBody = document.getElementById('parts-body');
+  if (parts.length > 0) {
+    partsBody.innerHTML = parts.map(p => {
+      const dims = (p.dimensions || []).map(d =>
+        `<span class="dim-chip">${escHtml(d.text)}</span>`
+      ).join('');
+      return `<div class="part-card">
+        <div class="part-header">
+          <span class="part-no-badge">#${p.part_no || '?'}</span>
+          <span class="part-name-text">${escHtml(p.part_name || 'Unknown')}</span>
+          ${p.material ? `<span class="part-material">· ${escHtml(p.material)}</span>` : ''}
+        </div>
+        <div class="dim-chips">${dims || '<span style="color:#4b5563;font-size:0.78rem">No dimensions linked</span>'}</div>
+      </div>`;
+    }).join('');
+  } else {
+    partsBody.innerHTML = '<p style="color:#4b5563; font-size:0.85rem">No part attribution available for this drawing.</p>';
+  }
+
+  // BOM + Stack-up
+  const bomRows = val.bom_rows || [];
+  const bsBody = document.getElementById('bom-stackup-body');
+  let bsHtml = '';
+
+  if (bomRows.length > 0) {
+    bsHtml += `<h4 style="font-size:0.85rem; color:#8892a4; margin-bottom:10px;">Bill of Materials</h4>
+    <div class="table-wrap" style="max-height:200px;">
+    <table class="bom-table">
+      <thead><tr><th>No.</th><th>Part Name</th><th>Material</th><th>Qty</th></tr></thead>
+      <tbody>` +
+      bomRows.filter(r => r.part_name || r.part_no).map(r => `<tr>
+        <td class="part-no">${r.part_no ?? '<span class="null-val">—</span>'}</td>
+        <td class="part-name">${r.part_name ? escHtml(r.part_name) : '<span class="null-val">—</span>'}</td>
+        <td class="material">${r.material ? escHtml(r.material) : '<span class="null-val">—</span>'}</td>
+        <td class="qty">${r.qty ?? '<span class="null-val">—</span>'}</td>
+      </tr>`).join('') +
+      `</tbody></table></div>`;
+  }
+
+  const sk = stackup.stackup_linear;
+  if (sk && sk.n_dimensions > 0) {
+    bsHtml += `<h4 style="font-size:0.85rem; color:#8892a4; margin:16px 0 10px;">Tolerance Stack-Up (Linear)</h4>
+    <div class="stackup-box">
+      <div class="stackup-row"><span class="stackup-label">Dimensions in chain</span><span class="stackup-value">${sk.n_dimensions}</span></div>
+      <div class="stackup-row"><span class="stackup-label">Total nominal</span><span class="stackup-value">${sk.total_nominal_mm} mm</span></div>
+      <div class="stackup-row"><span class="stackup-label">Worst-case tolerance</span><span class="stackup-value highlight">±${(sk.worst_case_tolerance_mm/2).toFixed(4)} mm</span></div>
+      <div class="stackup-row"><span class="stackup-label">RSS tolerance</span><span class="stackup-value">±${(sk.rss_tolerance_mm/2).toFixed(4)} mm</span></div>
+    </div>`;
+  }
+
+  if (stackup.fit_types && stackup.fit_types.length > 0) {
+    bsHtml += `<h4 style="font-size:0.85rem; color:#8892a4; margin:16px 0 8px;">Fit Specifications</h4>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">` +
+    stackup.fit_types.map(f => `<span class="type-badge t-tolerance">${escHtml(f)}</span>`).join('') +
+    `</div>`;
+  }
+
+  if (!bsHtml) {
+    bsHtml = '<p style="color:#4b5563; font-size:0.85rem">No BOM or tolerance data found in this drawing.</p>';
+  }
+  bsBody.innerHTML = bsHtml;
+
+  // Downloads
+  const dlRow = document.getElementById('download-row');
+  const dlTypes = [
+    ['structured', '📄 Structured JSON'],
+    ['associations', '🔗 Associations JSON'],
+    ['attributed', '🔩 Attribution JSON'],
+    ['stackup', '📐 Stack-Up JSON'],
+  ];
+  dlRow.innerHTML = dlTypes.map(([type, label]) =>
+    `<a href="/download/${currentJobId}/${type}" class="btn btn-secondary" style="text-decoration:none; font-size:0.82rem;">${label}</a>`
+  ).join('');
+}
+
+function switchImage(key, tabEl) {
+  document.getElementById('main-image').src = availableImages[key] || '';
+  document.querySelectorAll('.img-tab').forEach(t => t.classList.remove('active'));
+  tabEl.classList.add('active');
+}
+
+function resetUI() {
+  currentJobId = null;
+  document.getElementById('results-section').classList.add('hidden');
+  document.getElementById('upload-section').classList.remove('hidden');
+  document.getElementById('progress-section').classList.add('hidden');
+  document.getElementById('file-input').value = '';
+  setProgress(0, '');
+}
+
+function escHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>
