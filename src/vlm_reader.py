@@ -137,9 +137,179 @@ def post_process_text(text):
     return text
 
 
-# ============================================================
-# EasyOCR setup
-# ============================================================
+def _prepare_image_variants(image):
+    """
+    Generate multiple enhanced variants of an image for multi-pass OCR.
+    Each variant emphasizes different text characteristics.
+
+    Returns list of (variant_name, image_array) tuples.
+    """
+    import numpy as np
+    variants = []
+
+    # 1. Grayscale baseline
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+    variants.append(("gray", cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)))
+
+    # 2. Contrast enhanced (existing approach)
+    enhanced = cv2.convertScaleAbs(image, alpha=1.3, beta=10)
+    variants.append(("contrast", enhanced))
+
+    # 3. CLAHE — adaptive histogram equalization, great for uneven lighting
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray_clahe = clahe.apply(gray)
+    variants.append(("clahe", cv2.cvtColor(gray_clahe, cv2.COLOR_GRAY2BGR)))
+
+    # 4. Sharpened — unsharp mask to enhance fine dimension text
+    blurred = cv2.GaussianBlur(gray, (0, 0), 3)
+    sharpened = cv2.addWeighted(gray, 1.5, blurred, -0.5, 0)
+    variants.append(("sharp", cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR)))
+
+    return variants
+
+
+def _iou_bboxes(b1, b2):
+    """Compute IoU between two [x, y, w, h] bounding boxes."""
+    x1, y1, w1, h1 = b1
+    x2, y2, w2, h2 = b2
+    ix = max(0, min(x1 + w1, x2 + w2) - max(x1, x2))
+    iy = max(0, min(y1 + h1, y2 + h2) - max(y1, y2))
+    inter = ix * iy
+    union = w1 * h1 + w2 * h2 - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _merge_multipass_results(all_results, iou_threshold=0.5):
+    """
+    Merge OCR results from multiple image variants.
+
+    Strategy:
+    - Group detections that overlap (IoU > threshold) — they're the same text region
+    - From each group, keep the detection with highest confidence
+    - Prefer engineering-valid text (contains digits, Ø, M, R) over garbled text
+
+    Args:
+        all_results: List of detection dicts with keys: box, text, raw_text, confidence
+        iou_threshold: Overlap threshold to consider two detections as duplicates
+
+    Returns:
+        Deduplicated list of best detections.
+    """
+    if not all_results:
+        return []
+
+    # Sort by confidence descending — process best first
+    sorted_results = sorted(all_results, key=lambda x: -x['confidence'])
+    merged = []
+
+    for det in sorted_results:
+        box = det['box']
+        # Check if this overlaps with any already-merged detection
+        is_duplicate = False
+        for existing in merged:
+            if _iou_bboxes(box, existing['box']) > iou_threshold:
+                # Keep the one with higher confidence (already sorted, so existing wins)
+                # But prefer engineering-valid text even at lower confidence
+                existing_valid = _is_engineering_valid(existing['text'])
+                new_valid = _is_engineering_valid(det['text'])
+                if new_valid and not existing_valid:
+                    # Replace with engineering-valid text
+                    existing.update(det)
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            merged.append(dict(det))
+
+    return merged
+
+
+def _is_engineering_valid(text):
+    """
+    Check if text looks like valid engineering annotation.
+    Used to prefer engineering-valid text over garbled OCR output.
+    """
+    if not text:
+        return False
+    t = text.strip()
+    # Contains digits
+    if any(c.isdigit() for c in t):
+        return True
+    # Engineering symbols
+    if any(c in t for c in 'Ø×°±'):
+        return True
+    # Thread spec, diameter, radius
+    if re.match(r'^[MRØ]', t):
+        return True
+    # Known engineering words
+    upper = t.upper()
+    eng_words = {'EQUI-SP', 'HOLE', 'DIA', 'THICK', 'DEEP', 'LONG', 'WIDE',
+                 'PARTS', 'NAME', 'MATL', 'QTY', 'MS', 'CI', 'FS'}
+    if upper in eng_words or any(w in upper for w in eng_words):
+        return True
+    return False
+
+
+
+    """
+    Build a binary mask covering detected text regions from Stage 1.5.
+    Used to filter EasyOCR results to only keep detections in known text areas.
+
+    Args:
+        image_shape:  (h, w) of the image at OCR scale.
+        text_regions: List of (x, y, w, h) boxes from detect_text_regions().
+        pad:          Extra padding around each region in pixels.
+
+    Returns:
+        Binary mask (numpy array, same size as image) — 255 where text expected.
+    """
+    import numpy as np
+    mask = np.zeros(image_shape[:2], dtype=np.uint8)
+    h_img, w_img = image_shape[:2]
+    for (x, y, bw, bh) in text_regions:
+        x1 = max(0, x - pad)
+        y1 = max(0, y - pad)
+        x2 = min(w_img, x + bw + pad)
+        y2 = min(h_img, y + bh + pad)
+        mask[y1:y2, x1:x2] = 255
+    return mask
+
+
+def _bbox_overlaps_mask(bbox, mask, threshold=0.3):
+    """
+    Check if an EasyOCR bounding box overlaps sufficiently with the text mask.
+
+    Args:
+        bbox:      List of 4 (x,y) corner points from EasyOCR.
+        mask:      Binary mask from _build_text_mask.
+        threshold: Minimum fraction of bbox area that must be in mask.
+
+    Returns:
+        True if the bbox overlaps the mask enough to keep.
+    """
+    import numpy as np
+    xs = [p[0] for p in bbox]
+    ys = [p[1] for p in bbox]
+    x1 = max(0, int(min(xs)))
+    y1 = max(0, int(min(ys)))
+    x2 = min(mask.shape[1], int(max(xs)) + 1)
+    y2 = min(mask.shape[0], int(max(ys)) + 1)
+
+    if x2 <= x1 or y2 <= y1:
+        return False
+
+    region = mask[y1:y2, x1:x2]
+    area = (x2 - x1) * (y2 - y1)
+    if area == 0:
+        return False
+
+    overlap = float(np.count_nonzero(region)) / area
+    return overlap >= threshold
+
+
+
 _ocr_engine = None
 
 def get_ocr():
@@ -290,23 +460,28 @@ def process_text_regions(image_path, output_dir="results", limit=None):
 # ============================================================
 # Full image OCR (preferred approach)
 # ============================================================
-def read_full_image(image_path, output_dir="results", min_confidence=0.5):
+def read_full_image(image_path, output_dir="results", min_confidence=0.5,
+                    multipass=True):
     """
     Run EasyOCR on whole image with engineering-drawing optimizations.
+    Uses multi-pass OCR on multiple image variants for better coverage.
     Uses EasyOCR's built-in CRAFT detector instead of our MSER.
+
+    Args:
+        image_path:    Path to the original PNG image.
+        output_dir:    Directory to write outputs.
+        min_confidence: Minimum confidence threshold.
+        multipass:     If True, run OCR on multiple image variants and merge.
     """
     print(f"\n=== STAGE 2: Full-image OCR ===")
-    print(f"Mode: EasyOCR (engineering tuned)")
+    print(f"Mode: EasyOCR (engineering tuned, multipass={multipass})")
 
     original = cv2.imread(image_path)
     if original is None:
         raise ValueError(f"Could not load image: {image_path}")
 
-    # contrast boost for clearer text
-    enhanced = cv2.convertScaleAbs(original, alpha=1.3, beta=10)
-
-    # keep very large images from blowing up OCR time
-    h, w = enhanced.shape[:2]
+    # Compute scale factor
+    h, w = original.shape[:2]
     max_dim = max(w, h)
     scale = 1.0
     if max_dim > 1800:
@@ -314,61 +489,123 @@ def read_full_image(image_path, output_dir="results", min_confidence=0.5):
     elif max_dim < 900:
         scale = min(2.0, 900.0 / max_dim)
 
-    if scale != 1.0:
-        new_w = max(1, int(w * scale))
-        new_h = max(1, int(h * scale))
-        enhanced = cv2.resize(enhanced, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC)
-        h, w = enhanced.shape[:2]
-
-    # prepare image for OCR
-    ocr_image = enhanced
     inverse_scale = 1.0 / scale
 
-    ocr = get_ocr()
-    print(f"\nRunning EasyOCR on image ({w}x{h})...")
-    results = ocr.readtext(
-        ocr_image,
-        detail=1,
-        paragraph=False,
-        text_threshold=0.6,
-        low_text=0.35,
-        link_threshold=0.4,
-        rotation_info=[90, 180, 270]
-    )
+    def _scale_image(img):
+        if scale == 1.0:
+            return img
+        new_w = max(1, int(img.shape[1] * scale))
+        new_h = max(1, int(img.shape[0] * scale))
+        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+        return cv2.resize(img, (new_w, new_h), interpolation=interp)
 
-    print(f"  Detected {len(results)} raw regions")
+    ocr = get_ocr()
+
+    # Prepare image variants for multi-pass OCR
+    if multipass:
+        variants = _prepare_image_variants(original)
+    else:
+        enhanced = cv2.convertScaleAbs(original, alpha=1.3, beta=10)
+        variants = [("contrast", enhanced)]
+
+    # Run OCR on each variant and collect all raw detections
+    all_raw_detections = []
+    for variant_name, variant_img in variants:
+        scaled = _scale_image(variant_img)
+        vh, vw = scaled.shape[:2]
+        print(f"  [{variant_name}] Running EasyOCR on ({vw}x{vh})...")
+        try:
+            raw = ocr.readtext(
+                scaled,
+                detail=1,
+                paragraph=False,
+                text_threshold=0.6,
+                low_text=0.35,
+                link_threshold=0.4,
+                rotation_info=[90, 180, 270]
+            )
+            for bbox, raw_text, conf in raw:
+                if conf < min_confidence:
+                    continue
+                xs = [p[0] for p in bbox]
+                ys = [p[1] for p in bbox]
+                x = int(min(xs) * inverse_scale)
+                y = int(min(ys) * inverse_scale)
+                wb = int((max(xs) - min(xs)) * inverse_scale)
+                hb = int((max(ys) - min(ys)) * inverse_scale)
+                all_raw_detections.append({
+                    "box": [x, y, wb, hb],
+                    "text": raw_text,
+                    "raw_text": raw_text,
+                    "confidence": float(conf),
+                    "_bbox_ocr": bbox,  # keep for mask check
+                    "_variant": variant_name,
+                })
+            print(f"    -> {len(raw)} raw detections")
+        except Exception as e:
+            print(f"    WARNING: OCR failed on variant {variant_name}: {e}")
+
+    print(f"  Total raw detections across all variants: {len(all_raw_detections)}")
+
+    # Merge multi-pass results — deduplicate overlapping detections
+    merged = _merge_multipass_results(all_raw_detections, iou_threshold=0.4)
+    print(f"  After deduplication: {len(merged)} unique detections")
+
+    # Build text region mask from Stage 1.5
+    # Use the contrast-enhanced scaled image for mask building
+    enhanced_for_mask = _scale_image(cv2.convertScaleAbs(original, alpha=1.3, beta=10))
+    h_ocr, w_ocr = enhanced_for_mask.shape[:2]
+    use_mask = False
+    text_mask = None
+    try:
+        binary = preprocess(image_path, save_result=False)
+        if scale != 1.0:
+            import numpy as np
+            binary_scaled = cv2.resize(binary, (w_ocr, h_ocr), interpolation=cv2.INTER_NEAREST)
+        else:
+            binary_scaled = binary
+        elements = detect_all_elements(binary_scaled)
+        text_regions_stage15 = elements.get("text_regions", [])
+        contours_stage15 = elements.get("contours", [])
+        all_regions = text_regions_stage15 + contours_stage15
+        if all_regions:
+            text_mask = _build_text_mask(enhanced_for_mask.shape, all_regions, pad=20)
+            use_mask = True
+            print(f"  Text mask: {len(text_regions_stage15)} text + {len(contours_stage15)} contour regions")
+    except Exception as e:
+        print(f"  WARNING: text mask failed ({e}), using all detections")
+
     print(f"  Filtering with min_confidence={min_confidence}")
     print("-" * 60)
 
     structured = []
-    for i, (bbox, raw_text, conf) in enumerate(results, 1):
-        if conf < min_confidence:
-            continue
+    filtered_by_mask = 0
 
-        xs = [p[0] for p in bbox]
-        ys = [p[1] for p in bbox]
+    for det in merged:
+        raw_text = det["text"]
+        conf = det["confidence"]
+        box = det["box"]
+        x, y, wb, hb = box
 
-        # NEW: aspect-ratio heuristic — tall narrow "8" is almost certainly a
-        # diameter symbol (Ø). Guard against zero-dimension boxes.
-        w_box_ocr = max(xs) - min(xs)
-        h_box_ocr = max(ys) - min(ys)
-        if (raw_text.strip() == "8"
-                and w_box_ocr > 0 and h_box_ocr > 0
-                and w_box_ocr <= 20 and h_box_ocr >= 20):
+        # Text region mask filter (use scaled bbox for mask check)
+        bbox_ocr = det.get("_bbox_ocr")
+        if use_mask and conf < 0.85 and bbox_ocr is not None and text_mask is not None:
+            if not _bbox_overlaps_mask(bbox_ocr, text_mask, threshold=0.25):
+                filtered_by_mask += 1
+                continue
+
+        # Aspect-ratio heuristic for Ø detection (using original-scale box)
+        if raw_text.strip() == "8" and wb > 0 and hb > 0 and wb <= 20 and hb >= 20:
             raw_text = "Ø"
 
         text = post_process_text(raw_text)
-        x = int(min(xs) * inverse_scale)
-        y = int(min(ys) * inverse_scale)
-        w_box = int((max(xs) - min(xs)) * inverse_scale)
-        h_box = int((max(ys) - min(ys)) * inverse_scale)
 
         item = {
             "id": len(structured) + 1,
-            "box": [x, y, w_box, h_box],
+            "box": [x, y, wb, hb],
             "text": text,
-            "raw_text": raw_text,
-            "confidence": float(conf)
+            "raw_text": det["raw_text"],
+            "confidence": conf,
         }
         structured.append(item)
         marker = "" if text == raw_text else f"  (raw: '{raw_text}')"
@@ -394,6 +631,8 @@ def read_full_image(image_path, output_dir="results", min_confidence=0.5):
     print(f"\nSaved JSON: {output_path}")
     print(f"Saved viz:  {vis_path}")
     print(f"Total: {len(structured)} regions kept")
+    if use_mask and filtered_by_mask > 0:
+        print(f"  (filtered {filtered_by_mask} noise detections via text region mask)")
 
     return structured
 
