@@ -147,9 +147,15 @@
       <div class="icon">📐</div>
       <h2>Upload Engineering Drawing</h2>
       <p>Drag & drop a PNG/JPG image, or click to browse</p>
-      <p style="margin-top:8px; font-size:0.78rem; color:#4b5563;">Supports: part drawings (Cat 1), assembly drawings (Cat 2), assembly views (Cat 3)</p>
+      <p style="margin-top:8px; font-size:0.78rem; color:#4b5563;">Supports: part drawings (cad1), assembly drawings (cad2), assembly views (cad3)</p>
       <input type="file" id="file-input" accept=".png,.jpg,.jpeg" onchange="handleFileSelect(this)">
-      <div style="margin-top:20px;">
+      <div style="margin-top:20px; display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap;">
+        <select id="cat-select" style="background:#1e2535; color:#c0c8d8; border:1px solid #2d3448; border-radius:8px; padding:9px 14px; font-size:0.85rem; cursor:pointer;">
+          <option value="auto">Auto-detect category</option>
+          <option value="cad1">cad1 — Part drawing</option>
+          <option value="cad2">cad2 — Assembly drawing</option>
+          <option value="cad3">cad3 — Assembly view</option>
+        </select>
         <button class="btn btn-primary" onclick="event.stopPropagation(); document.getElementById('file-input').click()">Choose File</button>
       </div>
     </div>
@@ -264,6 +270,7 @@ function uploadFile(file) {
 
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('category', document.getElementById('cat-select').value);
 
   // Simulate progress while waiting
   let prog = 5;

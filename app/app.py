@@ -29,7 +29,7 @@ from flask import (Flask, render_template, request, jsonify,
 # Make src/ importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from vlm_reader import read_full_image
+from vlm_reader import read_full_image, get_ocr
 from validation import validate_file
 from association import associate_file
 from part_attribution import attribute_file
@@ -46,6 +46,14 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+
+# ── Warm up EasyOCR on startup so first request is fast ──────────────────────
+print("Warming up EasyOCR (loading models)...")
+try:
+    get_ocr()
+    print("EasyOCR ready.")
+except Exception as e:
+    print(f"WARNING: EasyOCR warmup failed: {e}")
 
 
 def allowed_file(filename):
@@ -88,32 +96,35 @@ def analyse():
     # Save uploaded file with unique ID
     job_id = str(uuid.uuid4())[:8]
     ext = file.filename.rsplit('.', 1)[1].lower()
-    image_filename = f"{job_id}.{ext}"
+
+    # Use category hint to name file so pipeline auto-detects category
+    category_hint = request.form.get('category', 'auto')
+    if category_hint == 'cad1':
+        image_filename = f"cad1_{job_id}.{ext}"
+    elif category_hint == 'cad2':
+        image_filename = f"cad2_{job_id}.{ext}"
+    elif category_hint == 'cad3':
+        image_filename = f"cad3_{job_id}.{ext}"
+    else:
+        image_filename = f"cad1_{job_id}.{ext}"  # default to cat1 for auto
+
     image_path = os.path.join(UPLOAD_DIR, image_filename)
     file.save(image_path)
 
     job_dir = os.path.join(RESULTS_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
 
-    # Derive basename for output files
-    basename = job_id
+    # Derive basename — strip extension
+    basename = os.path.splitext(image_filename)[0]
     results = {"job_id": job_id, "stages": {}}
     t_start = time.time()
 
     try:
         # ── Stage 2: OCR ──────────────────────────────────────────────────
         print(f"\n[{job_id}] Stage 2: OCR...")
+        # multipass=False for speed in UI; set True for higher accuracy
         ocr_results = read_full_image(image_path, output_dir=job_dir, multipass=False)
-        fullocr_path = os.path.join(job_dir, f"{basename}_fullocr.json")
-        # read_full_image saves as {basename}_fullocr.json but basename is job_id
-        # Check actual saved path
-        actual_fullocr = os.path.join(job_dir, f"{job_id}_fullocr.json")
-        if not os.path.exists(actual_fullocr):
-            # Try finding any _fullocr.json
-            for f in os.listdir(job_dir):
-                if f.endswith('_fullocr.json'):
-                    actual_fullocr = os.path.join(job_dir, f)
-                    break
+        actual_fullocr = os.path.join(job_dir, f"{basename}_fullocr.json")
 
         results["stages"]["ocr"] = {
             "detections": len(ocr_results),
@@ -123,7 +134,7 @@ def analyse():
         # ── Stage 3: Validation ───────────────────────────────────────────
         print(f"[{job_id}] Stage 3: Validation...")
         structured = validate_file(actual_fullocr, output_dir=job_dir)
-        structured_path = actual_fullocr.replace('_fullocr.json', '_structured.json')
+        structured_path = os.path.join(job_dir, f"{basename}_structured.json")
 
         if structured:
             summary = structured.get("summary", {})
@@ -177,15 +188,16 @@ def analyse():
         # ── Collect visualization images ──────────────────────────────────
         vis_images = {}
         for suffix in ['_fullocr.png', '_associations.png']:
-            for f in os.listdir(job_dir):
-                if f.endswith(suffix):
-                    vis_images[suffix.strip('_').replace('.png', '')] = \
-                        image_to_base64(os.path.join(job_dir, f))
+            for fname in os.listdir(job_dir):
+                if fname.endswith(suffix):
+                    vis_images[suffix.lstrip('_').replace('.png', '')] = \
+                        image_to_base64(os.path.join(job_dir, fname))
                     break
 
         # Original image
         vis_images['original'] = image_to_base64(image_path)
         results["images"] = vis_images
+        results["basename"] = basename
 
         print(f"[{job_id}] Done in {results['elapsed_sec']}s")
         return jsonify(results)
@@ -201,16 +213,22 @@ def analyse():
 def download(job_id, filetype):
     """Download a result JSON file."""
     job_dir = os.path.join(RESULTS_DIR, job_id)
-    filename_map = {
-        'structured': f'{job_id}_structured.json',
-        'associations': f'{job_id}_associations.json',
-        'attributed': f'{job_id}_attributed.json',
-        'stackup': f'{job_id}_stackup.json',
-    }
-    filename = filename_map.get(filetype)
-    if not filename:
+    if not os.path.exists(job_dir):
         return "Not found", 404
-    return send_from_directory(job_dir, filename, as_attachment=True)
+    # Find the file matching the filetype suffix
+    suffix_map = {
+        'structured':   '_structured.json',
+        'associations': '_associations.json',
+        'attributed':   '_attributed.json',
+        'stackup':      '_stackup.json',
+    }
+    suffix = suffix_map.get(filetype)
+    if not suffix:
+        return "Not found", 404
+    for fname in os.listdir(job_dir):
+        if fname.endswith(suffix):
+            return send_from_directory(job_dir, fname, as_attachment=True)
+    return "File not generated", 404
 
 
 if __name__ == '__main__':

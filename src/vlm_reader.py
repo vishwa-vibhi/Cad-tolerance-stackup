@@ -609,7 +609,7 @@ def read_full_image(image_path, output_dir="results", min_confidence=0.5,
         }
         structured.append(item)
         marker = "" if text == raw_text else f"  (raw: '{raw_text}')"
-        print(f"  [{item['id']:3d}] ({x:3d},{y:3d}) {w_box:3d}x{h_box:3d} conf={conf:.2f}  ->  '{text}'{marker}")
+        print(f"  [{item['id']:3d}] ({x:3d},{y:3d}) {wb:3d}x{hb:3d} conf={conf:.2f}  ->  '{text}'{marker}")
 
     filename = os.path.splitext(os.path.basename(image_path))[0]
     output_path = os.path.join(output_dir, f"{filename}_fullocr.json")
