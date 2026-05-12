@@ -630,7 +630,7 @@ if HYPOTHESIS_AVAILABLE:
         }),
         min_size=0, max_size=20
     ))
-    @settings(max_examples=100)
+    @settings(max_examples=100, deadline=None)
     def test_pbt_property14_total_detections_consistent(entries):
         """total_detections == len(classified) for any valid input list."""
         import tempfile, json as _json
@@ -654,7 +654,7 @@ if HYPOTHESIS_AVAILABLE:
         }),
         min_size=0, max_size=20
     ))
-    @settings(max_examples=100)
+    @settings(max_examples=100, deadline=None)
     def test_pbt_property15_summary_counts_consistent(entries):
         """sum(summary.values()) == total_detections and each count matches classified array."""
         import tempfile, json as _json

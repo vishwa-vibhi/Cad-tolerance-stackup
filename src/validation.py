@@ -382,8 +382,23 @@ def classify(text: str, category: int) -> str:
     if RE_DIMENSION.match(t):
         return "dimension_value"
 
-    # P13.5: single punctuation / noise characters → unknown immediately
+    # P13.5: noise / garbled OCR artifacts → unknown
+    # Rule 1: single punctuation or symbol
     if len(t) <= 2 and not t.isalnum():
+        return "unknown"
+    # Rule 2: 2-4 char mixed-case garbled strings (e.g. "Ozw", "ozy", "Ew", "TZ", "Ia", "Ja")
+    # that are all letters but don't match any known type — likely OCR noise
+    if 2 <= len(t) <= 4 and t.isalpha() and t.upper() not in PROTECTED_CODES:
+        # Allow known single/double letter codes that are protected
+        # Reject anything that looks like random letter combinations
+        # Heuristic: if it has mixed case and is short, it's noise
+        has_lower = any(c.islower() for c in t)
+        has_upper = any(c.isupper() for c in t)
+        if has_lower and has_upper and len(t) <= 3:
+            return "unknown"
+    # Rule 3: strings with non-ASCII characters that aren't Ø or ×
+    non_ascii = [c for c in t if ord(c) > 127 and c not in 'Ø×°±']
+    if non_ascii:
         return "unknown"
 
     # P14: fallback
@@ -499,6 +514,111 @@ def extract_parsed(type_: str, text: str) -> dict:
 # BOM row reconstruction
 # ============================================================
 
+def _detect_bom_region(classified_entries, image_h=None):
+    """
+    Detect the BOM table region by finding the bounding box of all BOM-type entries.
+
+    Returns (x_min, y_min, x_max, y_max) of the BOM region, or None if not found.
+    The BOM is typically in the lower portion of the image.
+    """
+    BOM_ANCHOR_TYPES = {'bom_header', 'part_name', 'material_code', 'material_name'}
+    bom_boxes = []
+
+    for entry in classified_entries:
+        if entry.get("type") not in BOM_ANCHOR_TYPES:
+            continue
+        box = _get_box_safe(entry)
+        if box is None:
+            continue
+        x, y, w, h = box
+        bom_boxes.append((x, y, x + w, y + h))
+
+    if len(bom_boxes) < 3:
+        return None
+
+    x_min = min(b[0] for b in bom_boxes)
+    y_min = min(b[1] for b in bom_boxes)
+    x_max = max(b[2] for b in bom_boxes)
+    y_max = max(b[3] for b in bom_boxes)
+
+    return (x_min, y_min, x_max, y_max)
+
+
+def _detect_bom_columns(classified_entries, bom_region):
+    """
+    Detect BOM column x-ranges from the x-positions of BOM header entries.
+
+    Uses actual header positions (Parts list, Name, Matl, Qty) to determine
+    column boundaries — much more accurate than equal division.
+
+    Returns a dict mapping role → (x_min, x_max) range, or None if detection fails.
+    """
+    if bom_region is None:
+        return None
+
+    bx_min, by_min, bx_max, by_max = bom_region
+    bom_width = bx_max - bx_min
+    if bom_width < 50:
+        return None
+
+    # Find BOM header entries and their x-centroids
+    header_positions = {}
+    for entry in classified_entries:
+        if entry.get("type") != "bom_header":
+            continue
+        box = _get_box_safe(entry)
+        if box is None:
+            continue
+        cx = box[0] + box[2] / 2.0
+        cy = box[1] + box[3] / 2.0
+        # Only headers within BOM region
+        if not (bx_min - 30 <= cx <= bx_max + 30 and by_min - 30 <= cy <= by_max + 30):
+            continue
+        header_text = entry.get("parsed", {}).get("header", "").upper()
+        header_positions[header_text] = cx
+
+    # Map known headers to roles
+    # Typical layout (left to right): SL NO / NO → part_no | NAME → part_name | MATL/MATERIAL → material | QTY → qty
+    role_headers = {
+        'part_no':   ['NO', 'SL NO', 'SL.NO', 'PART NO', 'NO.'],
+        'part_name': ['NAME', 'PART NAME', 'PARTS LIST'],
+        'material':  ['MATL', 'MAT', 'MATERIAL'],
+        'qty':       ['QTY', 'QUANTITY'],
+    }
+
+    role_x = {}
+    for role, candidates in role_headers.items():
+        for h in candidates:
+            if h in header_positions:
+                role_x[role] = header_positions[h]
+                break
+
+    # If we found at least 2 column anchors, build ranges
+    if len(role_x) >= 2:
+        # Sort roles by x position
+        sorted_roles = sorted(role_x.items(), key=lambda kv: kv[1])
+        col_ranges = {}
+        for i, (role, cx) in enumerate(sorted_roles):
+            x_start = cx - (bom_width / len(sorted_roles)) / 2
+            x_end   = cx + (bom_width / len(sorted_roles)) / 2
+            # Extend to edges for first and last
+            if i == 0:
+                x_start = bx_min - 10
+            if i == len(sorted_roles) - 1:
+                x_end = bx_max + 10
+            col_ranges[role] = (x_start, x_end)
+        return col_ranges
+
+    # Fallback: divide into 4 equal columns
+    col_w = bom_width / 4.0
+    return {
+        'part_no':   (bx_min,              bx_min + col_w),
+        'part_name': (bx_min + col_w,      bx_min + 2 * col_w),
+        'material':  (bx_min + 2 * col_w,  bx_min + 3 * col_w),
+        'qty':       (bx_min + 3 * col_w,  bx_max),
+    }
+
+
 def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
     """
     Group spatially-adjacent BOM fragments into structured rows.
@@ -520,7 +640,11 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
         return []
 
     BOM_TYPES = {'balloon_number', 'part_name', 'material_code', 'material_name', 'quantity'}
-    Y_TOLERANCE = 10  # pixels
+    Y_TOLERANCE = 14  # pixels — slightly wider than before for better row grouping
+
+    # Detect BOM region and column layout
+    bom_region = _detect_bom_region(classified_entries)
+    col_ranges = _detect_bom_columns(classified_entries, bom_region)
 
     # Filter to BOM-relevant entries with valid boxes
     relevant = []
@@ -530,6 +654,15 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
         box = _get_box_safe(entry)
         if box is None:
             continue
+        # If we have a BOM region, only include entries within it (with margin)
+        if bom_region is not None:
+            bx_min, by_min, bx_max, by_max = bom_region
+            cx = box[0] + box[2] / 2.0
+            cy = box[1] + box[3] / 2.0
+            margin = 30
+            if not (bx_min - margin <= cx <= bx_max + margin and
+                    by_min - margin <= cy <= by_max + margin):
+                continue
         relevant.append((entry, box))
 
     if not relevant:
@@ -556,7 +689,7 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
             current_y = y_center(item)
     rows.append(current_row)
 
-    # Assign roles within each row (sort by x, first match wins per role)
+    # Assign roles within each row
     bom_rows = []
     for row_items in rows:
         row_items.sort(key=lambda item: item[1][0])  # sort by x
@@ -566,26 +699,56 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
         material = None
         qty = None
 
-        for entry, _ in row_items:
+        for entry, box in row_items:
             t = entry.get("type")
             parsed = entry.get("parsed", {})
-            if t == "balloon_number" and part_no is None:
-                part_no = parsed.get("number")
-            elif t == "part_name" and part_name_val is None:
-                part_name_val = parsed.get("name")
-            elif t == "material_code" and material is None:
-                material = parsed.get("code")
-            elif t == "material_name" and material is None:
-                material = parsed.get("name")
-            elif t == "quantity" and qty is None:
-                qty = parsed.get("qty")
+            cx = box[0] + box[2] / 2.0
 
-        bom_rows.append({
-            "part_no": part_no,
-            "part_name": part_name_val,
-            "material": material,
-            "qty": qty,
-        })
+            # If column ranges detected, use them for role assignment
+            if col_ranges is not None:
+                pno_range  = col_ranges['part_no']
+                pname_range = col_ranges['part_name']
+                mat_range  = col_ranges['material']
+                qty_range  = col_ranges['qty']
+
+                if pno_range[0] <= cx <= pno_range[1]:
+                    # Part no column: prefer balloon_number, fallback to any number
+                    if t == 'balloon_number' and part_no is None:
+                        part_no = parsed.get("number")
+                    elif t == 'quantity' and part_no is None:
+                        part_no = parsed.get("qty")
+                elif pname_range[0] <= cx <= pname_range[1]:
+                    if t == 'part_name' and part_name_val is None:
+                        part_name_val = parsed.get("name")
+                elif mat_range[0] <= cx <= mat_range[1]:
+                    if t in ('material_code', 'material_name') and material is None:
+                        material = parsed.get("code") or parsed.get("name")
+                elif qty_range[0] <= cx <= qty_range[1]:
+                    if t == 'quantity' and qty is None:
+                        qty = parsed.get("qty")
+                    elif t == 'balloon_number' and qty is None:
+                        qty = parsed.get("number")
+            else:
+                # Fallback: type-based assignment (original logic)
+                if t == "balloon_number" and part_no is None:
+                    part_no = parsed.get("number")
+                elif t == "part_name" and part_name_val is None:
+                    part_name_val = parsed.get("name")
+                elif t == "material_code" and material is None:
+                    material = parsed.get("code")
+                elif t == "material_name" and material is None:
+                    material = parsed.get("name")
+                elif t == "quantity" and qty is None:
+                    qty = parsed.get("qty")
+
+        # Only include rows that have at least one non-null field
+        if any(v is not None for v in [part_no, part_name_val, material, qty]):
+            bom_rows.append({
+                "part_no": part_no,
+                "part_name": part_name_val,
+                "material": material,
+                "qty": qty,
+            })
 
     return bom_rows
 
