@@ -307,9 +307,95 @@ def _find_nearest_horizontal(cx, cy, h_lines, max_distance):
     return (best_data, best_dist, "line_horizontal")
 
 
-# ============================================================
-# Core association dispatcher
-# ============================================================
+def _find_extension_line_target(cx, cy, h_lines, v_lines, contours, max_distance):
+    """
+    Trace extension lines to find the exact feature a dimension annotates.
+
+    In engineering drawings, dimension lines have two short perpendicular
+    extension lines at their ends that touch the feature being measured.
+    This function looks for a short line near the annotation that is
+    perpendicular to the nearest dimension line, then follows it to find
+    the feature contour.
+
+    Args:
+        cx, cy:       Annotation center.
+        h_lines:      Horizontal lines from element detection.
+        v_lines:      Vertical lines from element detection.
+        contours:     Part contours from element detection.
+        max_distance: Max search distance.
+
+    Returns:
+        (element_data, distance, element_type) or None.
+    """
+    # Step 1: Find the nearest line (this is the dimension line)
+    nearest = _find_nearest_line(cx, cy, h_lines, v_lines, max_distance)
+    if nearest is None:
+        return None
+
+    dim_line_data, dim_dist, dim_type = nearest
+
+    # Step 2: Determine if dimension line is horizontal or vertical
+    x1, y1, x2, y2 = dim_line_data
+    is_horizontal = (dim_type == "line_horizontal")
+
+    # Step 3: Look for extension lines — short lines perpendicular to the dim line
+    # near the annotation endpoints
+    ext_search_dist = min(max_distance, 80)
+
+    if is_horizontal:
+        # Extension lines are vertical, near x=cx
+        best_ext = None
+        best_ext_dist = ext_search_dist + 1
+        for line in v_lines:
+            if len(line) < 4:
+                continue
+            lx1, ly1, lx2, ly2 = line
+            # Extension line should be near the annotation x-position
+            line_cx = (lx1 + lx2) / 2.0
+            if abs(line_cx - cx) > 30:
+                continue
+            d = distance_point_to_segment(cx, cy, lx1, ly1, lx2, ly2)
+            if d < best_ext_dist:
+                best_ext_dist = d
+                best_ext = line
+    else:
+        # Extension lines are horizontal, near y=cy
+        best_ext = None
+        best_ext_dist = ext_search_dist + 1
+        for line in h_lines:
+            if len(line) < 4:
+                continue
+            lx1, ly1, lx2, ly2 = line
+            line_cy = (ly1 + ly2) / 2.0
+            if abs(line_cy - cy) > 30:
+                continue
+            d = distance_point_to_segment(cx, cy, lx1, ly1, lx2, ly2)
+            if d < best_ext_dist:
+                best_ext_dist = d
+                best_ext = line
+
+    # Step 4: If extension line found, find the contour at its far end
+    if best_ext is not None:
+        lx1, ly1, lx2, ly2 = best_ext
+        # The far end of the extension line (away from annotation) points to the feature
+        # Pick the endpoint farther from the annotation
+        d1 = math.sqrt((lx1 - cx) ** 2 + (ly1 - cy) ** 2)
+        d2 = math.sqrt((lx2 - cx) ** 2 + (ly2 - cy) ** 2)
+        if d1 > d2:
+            target_x, target_y = lx1, ly1
+        else:
+            target_x, target_y = lx2, ly2
+
+        # Find contour at the target point
+        contour_result = _find_nearest_contour(target_x, target_y, contours, 50)
+        if contour_result is not None:
+            return contour_result
+
+    # Fallback: return the dimension line itself
+    return nearest
+
+
+
 
 def _unassociated_record(annotation):
     """Build an unassociated record for an annotation."""
@@ -357,7 +443,11 @@ def _associate_annotation(annotation, elements, category, max_distance):
 
     elif ann_type in ("dimension_value", "diameter_callout", "radius_callout",
                       "thread_spec", "tolerance", "dimension_with_note"):
-        result = _find_nearest_line(cx, cy, h_lines, v_lines, max_distance)
+        # For Category 1 part drawings, use extension line tracing for better accuracy
+        if category == 1:
+            result = _find_extension_line_target(cx, cy, h_lines, v_lines, contours, max_distance)
+        else:
+            result = _find_nearest_line(cx, cy, h_lines, v_lines, max_distance)
         if result is None:
             result = _find_nearest_contour(cx, cy, contours, max_distance)
 
@@ -444,15 +534,12 @@ def _build_output(structured_data, associations, source_structured):
 
 def _visualize(image_path, associations, output_path):
     """
-    Draw association connections on a copy of the original image.
+    Draw rich association visualization on the original image.
 
-    Yellow dots mark annotation centers. Colored lines connect each annotation
-    to its associated element. Unassociated annotations get a dot only.
-
-    Args:
-        image_path:  Path to the original PNG image.
-        associations: List of association record dicts.
-        output_path: Path to write the visualization PNG.
+    - Colored bounding boxes around each annotation (color = type)
+    - Text label showing the annotation text
+    - Connecting line from annotation to associated element
+    - Legend in corner
     """
     img = cv2.imread(image_path)
     if img is None:
@@ -460,45 +547,127 @@ def _visualize(image_path, associations, output_path):
         return
 
     vis = img.copy()
+    h_img, w_img = vis.shape[:2]
+
+    # Type → color mapping for annotation boxes
+    TYPE_COLORS = {
+        "dimension_value":     (255, 100,   0),   # orange
+        "diameter_callout":    (  0, 200, 100),   # green
+        "radius_callout":      (  0, 180,  80),   # green
+        "thread_spec":         (180,   0, 255),   # purple
+        "tolerance":           (  0,   0, 255),   # red
+        "hole_callout":        (255, 150,   0),   # amber
+        "dimension_with_note": (255, 100,   0),   # orange
+        "balloon_number":      (  0, 255, 200),   # cyan
+        "part_name":           (  0, 180, 255),   # sky blue
+        "material_code":       (200,   0, 200),   # magenta
+        "material_name":       (200,   0, 200),   # magenta
+        "bom_header":          (100, 200, 255),   # light blue
+        "section_marker":      (  0, 255,  80),   # lime
+        "spacing_annotation":  (  0, 255,  80),   # lime
+        "quantity":            (150, 255, 100),   # yellow-green
+        "unknown":             ( 80,  80,  80),   # gray
+    }
+
+    ASSOC_COLORS = {
+        "line_horizontal": (255,   0,   0),   # blue
+        "line_vertical":   (  0, 180,   0),   # green
+        "line_diagonal":   (200, 200,   0),   # cyan
+        "circle":          (  0,   0, 255),   # red
+        "contour":         (200,   0, 200),   # magenta
+    }
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.35
+    thickness = 1
 
     for assoc in associations:
         box = _safe_box(assoc.get("annotation_box"))
         if box is None:
             continue
 
+        ann_type = assoc.get("annotation_type", "unknown")
+        ann_text = assoc.get("annotation_text", "")
         cx, cy = _annotation_center(box)
         icx, icy = int(cx), int(cy)
+        x, y, w, h = box
 
-        # Yellow filled dot at annotation center
-        cv2.circle(vis, (icx, icy), 3, (0, 255, 255), -1)
+        color = TYPE_COLORS.get(ann_type, (128, 128, 128))
 
+        # Skip unknown in visualization to reduce clutter
+        if ann_type == "unknown":
+            continue
+
+        # Draw annotation bounding box
+        cv2.rectangle(vis, (x, y), (x + w, y + h), color, 1)
+
+        # Draw text label above the box
+        label = ann_text[:18] if ann_text else ann_type[:12]
+        label_size = cv2.getTextSize(label, font, font_scale, thickness)[0]
+        lx = max(0, x)
+        ly = max(label_size[1] + 2, y - 2)
+        # Small background for readability
+        cv2.rectangle(vis, (lx, ly - label_size[1] - 2), (lx + label_size[0] + 2, ly + 1),
+                      (0, 0, 0), -1)
+        cv2.putText(vis, label, (lx + 1, ly - 1), font, font_scale, color, thickness)
+
+        # Draw association connection
         elem = assoc.get("associated_element")
         if elem is None:
             continue
 
-        color = ELEMENT_COLORS.get(elem["element_type"], (128, 128, 128))
+        assoc_color = ASSOC_COLORS.get(elem["element_type"], (128, 128, 128))
         data = elem["element_data"]
 
         if elem["element_type"] in ("line_horizontal", "line_vertical", "line_diagonal"):
             if len(data) >= 4:
                 x1, y1, x2, y2 = data[0], data[1], data[2], data[3]
                 mx, my = (x1 + x2) // 2, (y1 + y2) // 2
-                cv2.line(vis, (icx, icy), (mx, my), color, 1)
-                cv2.line(vis, (x1, y1), (x2, y2), color, 2)
+                # Thin dashed-style line from annotation to element midpoint
+                cv2.line(vis, (icx, icy), (mx, my), assoc_color, 1, cv2.LINE_AA)
+                # Highlight the associated line segment
+                cv2.line(vis, (x1, y1), (x2, y2), assoc_color, 2)
 
         elif elem["element_type"] == "circle":
             if len(data) >= 3:
                 ecx, ecy, r = data[0], data[1], data[2]
-                cv2.line(vis, (icx, icy), (ecx, ecy), color, 1)
-                cv2.circle(vis, (ecx, ecy), r, color, 2)
+                cv2.line(vis, (icx, icy), (ecx, ecy), assoc_color, 1, cv2.LINE_AA)
+                cv2.circle(vis, (ecx, ecy), r, assoc_color, 2)
 
         elif elem["element_type"] == "contour":
             if len(data) >= 4:
-                bx, by, bw, bh = data[0], data[1], data[2], data[3]
-                cv2.line(vis, (icx, icy), (bx + bw // 2, by + bh // 2), color, 1)
-                cv2.rectangle(vis, (bx, by), (bx + bw, by + bh), color, 1)
+                bx2, by2, bw2, bh2 = data[0], data[1], data[2], data[3]
+                cv2.line(vis, (icx, icy), (bx2 + bw2 // 2, by2 + bh2 // 2),
+                         assoc_color, 1, cv2.LINE_AA)
+                cv2.rectangle(vis, (bx2, by2), (bx2 + bw2, by2 + bh2), assoc_color, 1)
+
+    # ── Legend ────────────────────────────────────────────────────────────────
+    legend_items = [
+        ("Dimension",   TYPE_COLORS["dimension_value"]),
+        ("Diameter/R",  TYPE_COLORS["diameter_callout"]),
+        ("Thread",      TYPE_COLORS["thread_spec"]),
+        ("Hole",        TYPE_COLORS["hole_callout"]),
+        ("Balloon",     TYPE_COLORS["balloon_number"]),
+        ("Part name",   TYPE_COLORS["part_name"]),
+        ("BOM header",  TYPE_COLORS["bom_header"]),
+    ]
+    lx0, ly0 = 6, 6
+    pad = 2
+    row_h = 14
+    legend_w = 90
+    legend_h = len(legend_items) * row_h + pad * 2
+    # Semi-transparent background
+    overlay = vis.copy()
+    cv2.rectangle(overlay, (lx0, ly0), (lx0 + legend_w, ly0 + legend_h), (20, 20, 20), -1)
+    cv2.addWeighted(overlay, 0.7, vis, 0.3, 0, vis)
+    for i, (label, color) in enumerate(legend_items):
+        ry = ly0 + pad + i * row_h + row_h // 2
+        cv2.rectangle(vis, (lx0 + pad, ry - 4), (lx0 + pad + 10, ry + 4), color, -1)
+        cv2.putText(vis, label, (lx0 + pad + 14, ry + 4),
+                    font, 0.32, (220, 220, 220), 1)
 
     cv2.imwrite(output_path, vis)
+
 
 
 # ============================================================

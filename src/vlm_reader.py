@@ -617,13 +617,23 @@ def read_full_image(image_path, output_dir="results", min_confidence=0.5,
     with open(output_path, "w") as f:
         json.dump(structured, f, indent=2)
 
-    # visualization
+    # visualization — color-coded by confidence
     vis = original.copy()
     for item in structured:
         x, y, w_box, h_box = item["box"]
-        cv2.rectangle(vis, (x, y), (x+w_box, y+h_box), (0, 255, 0), 2)
-        cv2.putText(vis, item["text"], (x, y-3),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        conf = item.get("confidence", 0)
+        # Green = high conf, yellow = medium, red = low
+        if conf > 0.9:
+            color = (0, 200, 0)
+        elif conf > 0.7:
+            color = (0, 200, 200)
+        else:
+            color = (0, 100, 255)
+        cv2.rectangle(vis, (x, y), (x + w_box, y + h_box), color, 1)
+        # Label with text (truncated)
+        label = item["text"][:20] if item["text"] else ""
+        cv2.putText(vis, label, (x, max(y - 2, 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, color, 1)
     vis_path = os.path.join(output_dir, f"{filename}_fullocr.png")
     cv2.imwrite(vis_path, vis)
 
