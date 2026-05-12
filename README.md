@@ -9,17 +9,23 @@ Automated 2D CAD drawing analysis using Computer Vision.
 - Links each dimension to the correct part
 
 ## Pipeline
-1. Preprocessing — OpenCV binarization, deskew, morphological cleanup
-2. View Segmentation — projection profiles, connected components
-3. Element Detection — Hough lines, template matching, contour analysis
-4. OCR — PaddleOCR with rotation correction
-5. Association — geometric line tracing, nearest contour
+1. Preprocessing — OpenCV binarization, morphological cleanup
+2. Element Detection — Hough lines, contour analysis, text region proposals
+3. OCR — EasyOCR with upscaling and rotation-aware detection
+4. Validation / Structuring — regex-based engineering text classification
+5. Association — nearest-contour linking for dimension/label association
 
 ## Setup
 ```bash
 python -m venv cad_env
 cad_env\Scripts\activate
 pip install -r requirements.txt
+```
+
+## Run
+```bash
+python src/pipeline.py data/category_1/cad1_001.png results
+python src/pipeline.py --dataset data/category_1 results/batch
 ```
 
 ## Dataset
@@ -29,6 +35,5 @@ pip install -r requirements.txt
 
 ## Tech Stack
 - OpenCV 4.x
-- PaddleOCR
-- YOLOv8
+- EasyOCR
 - PyTorch (CUDA - RTX 4060)

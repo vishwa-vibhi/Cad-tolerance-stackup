@@ -9,7 +9,11 @@ import numpy as np
 import os
 import sys
 import json
-from preprocessing import preprocess
+
+try:
+    from preprocessing import preprocess
+except ImportError:
+    from .preprocessing import preprocess
 
 
 def detect_lines(binary, min_length=20, max_gap=5):

@@ -9,7 +9,27 @@ import os
 import json
 import time
 sys.path.insert(0, 'src')
-from vlm_reader import read_full_image
+
+try:
+    from vlm_reader import read_full_image
+except ImportError:
+    from src.vlm_reader import read_full_image
+
+try:
+    from validation import validate_file
+except ImportError:
+    from src.validation import validate_file
+
+try:
+    from association import associate_file
+except ImportError:
+    from src.association import associate_file
+
+try:
+    from part_attribution import attribute_file as attribute_parts
+except ImportError:
+    from src.part_attribution import attribute_file as attribute_parts
+
 
 
 def process_category(category_dir, results_dir):
@@ -33,10 +53,35 @@ def process_category(category_dir, results_dir):
             results = read_full_image(img_path, output_dir=results_dir)
             elapsed = time.time() - start
 
+            # Stage 3: Validation & Structuring
+            basename = os.path.splitext(img_name)[0]
+            fullocr_path = os.path.join(results_dir, f"{basename}_fullocr.json")
+            structured = None
+            if os.path.exists(fullocr_path):
+                structured = validate_file(fullocr_path, output_dir=results_dir)
+
+            # Stage 4: Geometric Association
+            structured_path = os.path.join(results_dir, f"{basename}_structured.json")
+            assoc_result = None
+            if os.path.exists(structured_path):
+                assoc_result = associate_file(img_path, structured_path, results_dir)
+
+            # Part Attribution
+            attr_result = None
+            if os.path.exists(structured_path):
+                try:
+                    attr_result = attribute_parts(structured_path, results_dir)
+                except Exception as e:
+                    print(f"  Attribution WARNING: {e}")
+
             # confidence stats
             high_conf = sum(1 for r in results if r['confidence'] > 0.9)
             med_conf  = sum(1 for r in results if 0.7 <= r['confidence'] <= 0.9)
             low_conf  = sum(1 for r in results if r['confidence'] < 0.7)
+            structured_count = structured.get("total_detections", 0) if structured else 0
+            assoc_matched    = assoc_result.get("matched", 0) if assoc_result else 0
+            assoc_unassoc    = assoc_result.get("unassociated", 0) if assoc_result else 0
+            named_dims       = attr_result.get("named_attributions", 0) if attr_result else 0
 
             stat = {
                 "image": img_name,
@@ -44,10 +89,14 @@ def process_category(category_dir, results_dir):
                 "high_confidence": high_conf,
                 "medium_confidence": med_conf,
                 "low_confidence": low_conf,
-                "time_seconds": round(elapsed, 1)
+                "time_seconds": round(elapsed, 1),
+                "structured_count": structured_count,
+                "association_matched": assoc_matched,
+                "association_unassociated": assoc_unassoc,
+                "named_dimensions": named_dims,
             }
             stats.append(stat)
-            print(f"  TIME: {elapsed:.1f}s | HIGH: {high_conf} | MED: {med_conf} | LOW: {low_conf}")
+            print(f"  TIME: {elapsed:.1f}s | HIGH: {high_conf} | MED: {med_conf} | LOW: {low_conf} | STRUCTURED: {structured_count} | ASSOC: {assoc_matched}/{assoc_matched+assoc_unassoc} | NAMED: {named_dims}")
 
         except Exception as e:
             print(f"  ERROR: {e}")

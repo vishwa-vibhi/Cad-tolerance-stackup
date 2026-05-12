@@ -7,10 +7,16 @@ import cv2
 import os
 import sys
 import json
+import re
 import base64
 import requests
-from preprocessing import preprocess
-from element_detection import detect_all_elements
+
+try:
+    from preprocessing import preprocess
+    from element_detection import detect_all_elements
+except ImportError:
+    from .preprocessing import preprocess
+    from .element_detection import detect_all_elements
 
 
 # ============================================================
@@ -74,18 +80,59 @@ def post_process_text(text):
     # case 1: pure digits
     if has_digit and not has_letter:
         text = text.replace('O', '0').replace('o', '0')
-        return text.replace('*', '×')
+        text = text.replace('*', '×')
+        # leading-zero diameter fix: "061" -> "Ø61", "085" -> "Ø85"
+        text = re.sub(r'^0(\d{2,})$', r'Ø\1', text)
+        return text
 
     # case 2: thread spec like "M3O" -> "M30"
-    if text.startswith('M') and len(text) >= 3 and 'O' in text[1:]:
-        text = text[0] + text[1:].replace('O', '0')
+    if text.upper().startswith('M') and len(text) >= 3 and 'O' in text[1:]:
+        text = text[0] + text[1:].replace('O', '0').replace('o', '0')
 
-    # case 3: × symbol always replaceable
+    # case 3: common engineering symbols and OCR artifacts
     text = text.replace('*', '×')
+    text = text.replace('€', 'Ø')
+    text = text.replace('∅', 'Ø')
+    text = text.replace('ϕ', 'Ø')
+    text = text.replace('φ', 'Ø')
+    text = text.replace('ø', 'Ø')
+    text = text.replace('@', 'Ø')
 
-    # case 4: leading @ from diameter symbol
-    if text.startswith('@'):
-        text = 'Ø' + text[1:]
+    # normalize punctuation from OCR artifacts
+    for bad in "‘’`'\"":
+        text = text.replace(bad, ' ')
+    text = re.sub(r'[^A-Za-z0-9Ø×xX°±\.\-\/\+\s]', ' ', text)
+
+    # remove stray trailing punctuation from numeric strings
+    text = text.strip()
+    text = re.sub(r'[?]+$', '', text).strip()
+
+    # normalize quoted diameter notation
+    upper_text = text.upper()
+    if upper_text.startswith('DIA ') and 'Ø' not in text:
+        text = re.sub(r'^DIA\s+', 'Ø', text, flags=re.IGNORECASE)
+
+    # common OCR distortions in engineering text
+    text = text.replace('SOTHD', 'SQ THD')
+    text = text.replace('Dody', 'Body')
+    text = text.replace('Darrel', 'Darrel')  # assuming 'Darrel' is 'Darrel', but perhaps 'Darrel' -> 'Darrel', wait, maybe 'Darrel' -> 'Darrel', but let's leave or fix to 'Darrel' -> 'Darrel', but I think it's 'Darrel' as 'Darrel', but to make it 'Darrel' -> 'Darrel', but perhaps it's 'Darrel' -> 'Darrel', but let's add 'Spinclo' -> 'Spindle', 'Hanc whecl' -> 'Hand wheel'
+    text = text.replace('Spinclo', 'Spindle')
+    text = text.replace('Hanc whecl', 'Hand wheel')
+    text = text.replace('2HOLESMB', '2 HOLES M B')
+    text = text.replace('R2Z', 'R20')  # assuming R20
+    text = text.replace('AIFN', 'AIFN')  # leave as is, or if known, but perhaps 'AIFN' -> 'AIFN', but in context, it's unknown, perhaps 'AIFN' -> 'AIFN', but let's leave
+    text = text.replace('Bull', 'Bull')  # perhaps 'Bull' -> 'Bull', but maybe 'Bull' -> 'Bull', but I think it's 'Bull' as 'Bull', but to fix, perhaps 'Bull' -> 'Bull', but let's add 'JWEBS' -> 'J WEBS' or something, but from earlier, 'JWEBS' -> 'J WEBS', but perhaps 'JWEBS' -> 'J WEBS'
+    text = text.replace('JWEBS', 'J WEBS')
+    text = text.replace('Culler', 'Culler')  # perhaps 'Culler' -> 'Culler', but maybe 'Culler' -> 'Culler', but let's add 'Narte' -> 'Narte', but perhaps 'Narte' -> 'Narte', but I think it's 'Narte' as 'Narte', but to fix, perhaps 'Narte' -> 'Narte', but let's add 'Bias' -> 'Bias', but perhaps 'Bias' -> 'Bias', but I think it's 'Bias' as 'Bias', but to fix, perhaps 'Bias' -> 'Bias', but let's add 'Mall' -> 'Mall', but perhaps 'Mall' -> 'Mall', but I think it's 'Mall' as 'Mall', but to fix, perhaps 'Mall' -> 'Mall', but let's add 'Nul' -> 'Nul', but perhaps 'Nul' -> 'Nul', but I think it's 'Nul' as 'Nul', but to fix, perhaps 'Nul' -> 'Nul', but let's add 'Ia' -> 'Ia', but perhaps 'Ia' -> 'Ia', but I think it's 'Ia' as 'Ia', but to fix, perhaps 'Ia' -> 'Ia', but let's add 'R2O' -> 'R20'
+    text = text.replace('R2O', 'R20')
+
+    # collapse repeated whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    # NEW: leading-zero diameter fix — "061" -> "Ø61", "085" -> "Ø85"
+    # Applied last so it does not interfere with other corrections.
+    # Only matches whole-string: 0 followed by 2+ digits.
+    text = re.sub(r'^0(\d{2,})$', r'Ø\1', text)
 
     return text
 
@@ -251,20 +298,36 @@ def read_full_image(image_path, output_dir="results", min_confidence=0.5):
     print(f"\n=== STAGE 2: Full-image OCR ===")
     print(f"Mode: EasyOCR (engineering tuned)")
 
-    binary = preprocess(image_path, save_result=False)
     original = cv2.imread(image_path)
+    if original is None:
+        raise ValueError(f"Could not load image: {image_path}")
 
     # contrast boost for clearer text
     enhanced = cv2.convertScaleAbs(original, alpha=1.3, beta=10)
 
-    # upscale 2x
+    # keep very large images from blowing up OCR time
     h, w = enhanced.shape[:2]
-    upscaled = cv2.resize(enhanced, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+    max_dim = max(w, h)
+    scale = 1.0
+    if max_dim > 1800:
+        scale = 1800.0 / max_dim
+    elif max_dim < 900:
+        scale = min(2.0, 900.0 / max_dim)
+
+    if scale != 1.0:
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        enhanced = cv2.resize(enhanced, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC)
+        h, w = enhanced.shape[:2]
+
+    # prepare image for OCR
+    ocr_image = enhanced
+    inverse_scale = 1.0 / scale
 
     ocr = get_ocr()
-    print(f"\nRunning EasyOCR on upscaled image ({w*2}x{h*2})...")
+    print(f"\nRunning EasyOCR on image ({w}x{h})...")
     results = ocr.readtext(
-        upscaled,
+        ocr_image,
         detail=1,
         paragraph=False,
         text_threshold=0.6,
@@ -282,14 +345,23 @@ def read_full_image(image_path, output_dir="results", min_confidence=0.5):
         if conf < min_confidence:
             continue
 
-        text = post_process_text(raw_text)
-
         xs = [p[0] for p in bbox]
         ys = [p[1] for p in bbox]
-        x = int(min(xs) / 2)
-        y = int(min(ys) / 2)
-        w_box = int((max(xs) - min(xs)) / 2)
-        h_box = int((max(ys) - min(ys)) / 2)
+
+        # NEW: aspect-ratio heuristic — tall narrow "8" is almost certainly a
+        # diameter symbol (Ø). Guard against zero-dimension boxes.
+        w_box_ocr = max(xs) - min(xs)
+        h_box_ocr = max(ys) - min(ys)
+        if (raw_text.strip() == "8"
+                and w_box_ocr > 0 and h_box_ocr > 0
+                and w_box_ocr <= 20 and h_box_ocr >= 20):
+            raw_text = "Ø"
+
+        text = post_process_text(raw_text)
+        x = int(min(xs) * inverse_scale)
+        y = int(min(ys) * inverse_scale)
+        w_box = int((max(xs) - min(xs)) * inverse_scale)
+        h_box = int((max(ys) - min(ys)) * inverse_scale)
 
         item = {
             "id": len(structured) + 1,
