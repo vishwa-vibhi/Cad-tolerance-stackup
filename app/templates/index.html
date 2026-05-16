@@ -133,7 +133,7 @@ select { background: #1e2535; color: #c0c8d8; border: 1px solid #2d3448; border-
       <p style="margin-top:6px; font-size:0.75rem; color:#4b5563;">Part drawings (cad1) · Assembly drawings (cad2) · Assembly views (cad3)</p>
       <input type="file" id="file-input" accept=".png,.jpg,.jpeg" onchange="handleFileSelect(this)">
       <div style="margin-top:18px; display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap;">
-        <select id="cat-select">
+        <select id="cat-select" onclick="event.stopPropagation()">
           <option value="auto">Auto-detect category</option>
           <option value="cad1">cad1 — Part drawing</option>
           <option value="cad2">cad2 — Assembly drawing</option>
