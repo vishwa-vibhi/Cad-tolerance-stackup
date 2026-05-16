@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 11
+names: ['angularity', 'circularity', 'concentricity', 'cylindricity', 'flatness', 'parallelism', 'perpendicularity', 'position', 'profile of line', 'profile of surface', 'straightness']
+
+roboflow:
+  workspace: vishwas-workspace-8yalm
+  project: vishwas-workspace-8yalm
+  version: dataset
+  license: Private
+  url: https://app.roboflow.com/vishwas-workspace-8yalm/vishwas-workspace-8yalm/dataset

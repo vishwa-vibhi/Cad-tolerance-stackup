@@ -1,0 +1,15 @@
+names:
+- angularity
+- circularity
+- concentricity
+- cylindricity
+- flatness
+- parallelism
+- perpendicularity
+- position
+- profile of line
+- profile of surface
+- straightness
+nc: 11
+train: C:\Users\gpvib\cad-tolerance-stackup\gdt_dataset_prepared\train\images
+val: C:\Users\gpvib\cad-tolerance-stackup\gdt_dataset_prepared\valid\images
