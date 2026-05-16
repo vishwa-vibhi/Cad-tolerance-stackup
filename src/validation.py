@@ -94,9 +94,13 @@ BOM_HEADERS = {
     'PARTS LIST', 'NAME', 'MATERIAL', 'QTY', 'NO', 'SL NO', 'PART NO',
     # Expanded: common abbreviations and variants in Indian standard drawings
     'MATL', 'MAT', 'SL.NO', 'SL. NO', 'PART NAME', 'PART NO.', 'NO.',
+    # OCR misreads of QTY
+    'OTY', 'OTY:', 'QTY:', 'OLY', 'OLY:', 'QUANTITY',
 }
 
-MATERIAL_CODES = {'MS', 'CI', 'FS', 'GM', 'CS', 'CR', 'AL', 'BR'}
+MATERIAL_CODES = {'MS', 'CI', 'FS', 'GM', 'CS', 'CR', 'AL', 'BR',
+                  # Extended material codes from Indian standard drawings
+                  'MCS', 'HCS', 'LCS', 'SS', 'SPS', 'WI', 'GI', 'PVC'}
 
 # Full material names (as opposed to 2-letter codes) — used in BOM tables
 MATERIAL_NAMES = {
@@ -117,6 +121,12 @@ PART_NAMES = {
     'LINK PIN', 'PISTON PIN', 'PISTON RING', 'ROD BUSH-UPPER',
     'ROD BUSH-LOWER', 'MASTER ROD BEARING', 'PISTON PIN PLUG',
     'PISTON', 'CONNECTING ROD', 'COTTER PIN',
+    # OCR variants seen in dataset
+    'PIVOT', 'SWIVEL PLATE', 'TOOL HOLDER', 'CENTRAL BLOCK',
+    'SHEAVE PIECE', 'SWIVEL PIECE', 'ROCKER ARM', 'LEVER',
+    'BRACKET', 'FLANGE', 'BUSH', 'BUSHING', 'STUD', 'CAP',
+    'HOUSING', 'SHAFT', 'GEAR', 'PULLEY', 'WHEEL', 'DISC',
+    'FRAME', 'BASE', 'SUPPORT', 'BRACKET', 'CLAMP',
 }
 
 VALID_TYPES = {
@@ -247,15 +257,25 @@ def normalise_text(text: str) -> str:
     # Step 3a: leading-zero diameter fix — whole-string match only
     t = re.sub(r'^0(\d{2,})$', r'Ø\1', t)
 
-    # Step 3b: degree symbol fix
-    t = re.sub(r'(\d{1,2})"', r'\1°', t)
+    # Step 3b: degree symbol fix — clean and broken UTF-8 encodings
+    t = re.sub(r'(\d{1,3})"', r'\1°', t)           # 45" → 45°
+    t = re.sub(r'(\d{1,3})\s*Â°', r'\1°', t)       # 45Â° → 45° (broken UTF-8)
+    t = re.sub(r'(\d{1,3})\s*Ã‚Â°', r'\1°', t)    # double-encoded variant
 
     # Step 3c: THICK typo fix (case-insensitive substring replacement)
     t = re.sub(r'IHICK', 'THICK', t, flags=re.IGNORECASE)
     t = re.sub(r'MICK', 'THICK', t, flags=re.IGNORECASE)
 
-    # Step 3d: multiplication symbol fix
+    # Step 3d: multiplication symbol fix — * and broken UTF-8 Ã—
     t = t.replace('*', '×')
+    t = re.sub(r'Ã—', '×', t)        # broken UTF-8 × → ×
+    t = re.sub(r'Ã\s*[×x]', '×', t)  # other variants
+
+    # Step 3e: trailing punctuation on engineering codes
+    t = re.sub(r'^(GROOVE|DEEP|THICK|HOLE|KEY)[;,\s]*$', r'\1', t, flags=re.IGNORECASE)
+
+    # Step 3f: Qty/Oty OCR misreads → QTY
+    t = re.sub(r'^[OQ]t[yi]:?$', 'QTY', t, flags=re.IGNORECASE)
 
     return t
 
@@ -336,6 +356,20 @@ def classify(text: str, category: int) -> str:
     # P4: dimension_with_note
     if RE_DIM_NOTE.search(t):
         return "dimension_with_note"
+
+    # P4.5: engineering specs with numeric + keyword (PCD, MODULE, GROOVE, DEEP standalone)
+    if re.match(r'^PCD\s*\d+', t, re.IGNORECASE):
+        return "dimension_with_note"
+    if re.match(r'^\d+\s*MODULE$', t, re.IGNORECASE):
+        return "dimension_with_note"
+    if re.match(r'^(GROOVE|DEEP|KEY)\s*\d+', t, re.IGNORECASE):
+        return "dimension_with_note"
+    if re.match(r'^\d+\s*(GROOVE|DEEP|KEY)', t, re.IGNORECASE):
+        return "dimension_with_note"
+
+    # P4.6: angle values — NNN° patterns
+    if re.match(r'^\d{1,3}°$', t):
+        return "dimension_value"
 
     # P5: tolerance
     if RE_TOLERANCE.match(t):
@@ -519,7 +553,7 @@ def _detect_bom_region(classified_entries, image_h=None):
     Detect the BOM table region by finding the bounding box of all BOM-type entries.
 
     Returns (x_min, y_min, x_max, y_max) of the BOM region, or None if not found.
-    The BOM is typically in the lower portion of the image.
+    The BOM is typically in the lower-right portion of the image.
     """
     BOM_ANCHOR_TYPES = {'bom_header', 'part_name', 'material_code', 'material_name'}
     bom_boxes = []
@@ -533,7 +567,7 @@ def _detect_bom_region(classified_entries, image_h=None):
         x, y, w, h = box
         bom_boxes.append((x, y, x + w, y + h))
 
-    if len(bom_boxes) < 3:
+    if len(bom_boxes) < 2:
         return None
 
     x_min = min(b[0] for b in bom_boxes)
@@ -541,15 +575,21 @@ def _detect_bom_region(classified_entries, image_h=None):
     x_max = max(b[2] for b in bom_boxes)
     y_max = max(b[3] for b in bom_boxes)
 
+    # Expand region slightly to catch nearby qty/balloon entries
+    x_min = max(0, x_min - 120)   # extend left to include part_no column
+    y_min = max(0, y_min - 20)
+    x_max = x_max + 20
+    y_max = y_max + 20
+
     return (x_min, y_min, x_max, y_max)
 
 
 def _detect_bom_columns(classified_entries, bom_region):
     """
-    Detect BOM column x-ranges from the x-positions of BOM header entries.
+    Detect BOM column x-ranges from the spatial layout of BOM entries.
 
-    Uses actual header positions (Parts list, Name, Matl, Qty) to determine
-    column boundaries — much more accurate than equal division.
+    In Indian standard drawings the BOM table has columns (left→right):
+        SL NO | PART NAME | MATERIAL | QTY
 
     Returns a dict mapping role → (x_min, x_max) range, or None if detection fails.
     """
@@ -558,65 +598,84 @@ def _detect_bom_columns(classified_entries, bom_region):
 
     bx_min, by_min, bx_max, by_max = bom_region
     bom_width = bx_max - bx_min
-    if bom_width < 50:
+    if bom_width < 30:
         return None
 
-    # Find BOM header entries and their x-centroids
-    header_positions = {}
+    # Collect x-centroids of each role type within the BOM region
+    role_xs = {'part_no': [], 'part_name': [], 'material': [], 'qty': []}
+
     for entry in classified_entries:
-        if entry.get("type") != "bom_header":
-            continue
+        t = entry.get("type")
         box = _get_box_safe(entry)
         if box is None:
             continue
         cx = box[0] + box[2] / 2.0
         cy = box[1] + box[3] / 2.0
-        # Only headers within BOM region
-        if not (bx_min - 30 <= cx <= bx_max + 30 and by_min - 30 <= cy <= by_max + 30):
+        if not (bx_min <= cx <= bx_max and by_min <= cy <= by_max):
             continue
-        header_text = entry.get("parsed", {}).get("header", "").upper()
-        header_positions[header_text] = cx
 
-    # Map known headers to roles
-    # Typical layout (left to right): SL NO / NO → part_no | NAME → part_name | MATL/MATERIAL → material | QTY → qty
-    role_headers = {
-        'part_no':   ['NO', 'SL NO', 'SL.NO', 'PART NO', 'NO.'],
-        'part_name': ['NAME', 'PART NAME', 'PARTS LIST'],
-        'material':  ['MATL', 'MAT', 'MATERIAL'],
-        'qty':       ['QTY', 'QUANTITY'],
-    }
+        if t == 'bom_header':
+            hdr = entry.get("parsed", {}).get("header", "").upper()
+            if hdr in ('NO', 'SL NO', 'SL.NO', 'PART NO', 'NO.'):
+                role_xs['part_no'].append(cx)
+            elif hdr in ('NAME', 'PART NAME', 'PARTS LIST'):
+                role_xs['part_name'].append(cx)
+            elif hdr in ('MATL', 'MAT', 'MATERIAL'):
+                role_xs['material'].append(cx)
+            elif hdr in ('QTY', 'QUANTITY', 'OTY'):
+                role_xs['qty'].append(cx)
+        elif t == 'part_name':
+            role_xs['part_name'].append(cx)
+        elif t in ('material_code', 'material_name'):
+            role_xs['material'].append(cx)
+        elif t == 'quantity':
+            role_xs['qty'].append(cx)
 
-    role_x = {}
-    for role, candidates in role_headers.items():
-        for h in candidates:
-            if h in header_positions:
-                role_x[role] = header_positions[h]
-                break
+    # Compute median x for each role that has data
+    def median_x(xs):
+        if not xs:
+            return None
+        s = sorted(xs)
+        return s[len(s) // 2]
 
-    # If we found at least 2 column anchors, build ranges
-    if len(role_x) >= 2:
-        # Sort roles by x position
-        sorted_roles = sorted(role_x.items(), key=lambda kv: kv[1])
-        col_ranges = {}
-        for i, (role, cx) in enumerate(sorted_roles):
-            x_start = cx - (bom_width / len(sorted_roles)) / 2
-            x_end   = cx + (bom_width / len(sorted_roles)) / 2
-            # Extend to edges for first and last
-            if i == 0:
-                x_start = bx_min - 10
-            if i == len(sorted_roles) - 1:
-                x_end = bx_max + 10
-            col_ranges[role] = (x_start, x_end)
-        return col_ranges
+    role_x = {role: median_x(xs) for role, xs in role_xs.items() if role_xs[role]}
 
-    # Fallback: divide into 4 equal columns
-    col_w = bom_width / 4.0
-    return {
-        'part_no':   (bx_min,              bx_min + col_w),
-        'part_name': (bx_min + col_w,      bx_min + 2 * col_w),
-        'material':  (bx_min + 2 * col_w,  bx_min + 3 * col_w),
-        'qty':       (bx_min + 3 * col_w,  bx_max),
-    }
+    if len(role_x) < 2:
+        # Not enough anchors — use positional heuristic based on bom_width
+        # Typical layout: NO(10%) | NAME(40%) | MATERIAL(30%) | QTY(20%)
+        return {
+            'part_no':   (bx_min,              bx_min + bom_width * 0.15),
+            'part_name': (bx_min + bom_width * 0.15, bx_min + bom_width * 0.55),
+            'material':  (bx_min + bom_width * 0.55, bx_min + bom_width * 0.80),
+            'qty':       (bx_min + bom_width * 0.80, bx_max),
+        }
+
+    # Build column ranges from detected x positions
+    # Sort roles by x to determine order
+    sorted_roles = sorted(role_x.items(), key=lambda kv: kv[1])
+    n = len(sorted_roles)
+    col_ranges = {}
+
+    for i, (role, cx) in enumerate(sorted_roles):
+        # Left boundary: midpoint between this and previous column (or bx_min)
+        if i == 0:
+            x_start = bx_min
+        else:
+            x_start = (sorted_roles[i-1][1] + cx) / 2.0
+        # Right boundary: midpoint between this and next column (or bx_max)
+        if i == n - 1:
+            x_end = bx_max
+        else:
+            x_end = (cx + sorted_roles[i+1][1]) / 2.0
+        col_ranges[role] = (x_start, x_end)
+
+    # Fill in any missing roles with reasonable defaults
+    all_roles = ['part_no', 'part_name', 'material', 'qty']
+    for role in all_roles:
+        if role not in col_ranges:
+            col_ranges[role] = (bx_min, bx_max)  # fallback: full width
+
+    return col_ranges
 
 
 def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
