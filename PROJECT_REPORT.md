@@ -1,4 +1,4 @@
-# CAD Tolerance Stack-Up Analysis Tool — Full Project Report
+# CAD Dimension Extraction & Association Tool — Full Project Report
 
 **Dataset:** K.L. Narayana Machine Drawing (3rd ed.) — 36 images across 3 categories  
 **Tech Stack:** Python · OpenCV · EasyOCR · scikit-learn · Flask  
@@ -8,15 +8,15 @@
 
 ## 1. Problem Statement
 
-Engineering drawings contain hundreds of dimension annotations, tolerance callouts, and part references. Reading these manually is slow and error-prone. This project builds an automated CV pipeline that:
+Engineering drawings contain hundreds of dimension annotations, thread callouts, and part references scattered across multiple views. Reading these manually is slow and error-prone. This project builds an automated CV pipeline that:
 
-1. Reads all text from a 2D engineering drawing using OCR
-2. Classifies each text into its engineering type (dimension, thread, tolerance, etc.)
-3. Links each annotation to the geometric element it describes (line, circle, contour)
-4. Identifies which part each dimension belongs to
-5. Labels what each dimension means (length, height, bore diameter, etc.)
-6. Computes tolerance stack-up chains
-7. Presents everything in a web dashboard
+1. **Extracts** all dimension text from a 2D engineering drawing using OCR
+2. **Classifies** each text into its engineering type (dimension, thread, diameter, hole, etc.)
+3. **Segments** the drawing into geometric elements (lines, circles, contours)
+4. **Associates** each dimension annotation to the geometric feature it describes
+5. **Labels** what each dimension means (length, height, bore diameter, etc.)
+6. **Attributes** each dimension to the correct part in assembly drawings
+7. **Presents** everything in a web dashboard
 
 ---
 
@@ -52,7 +52,7 @@ Input Image (PNG/JPG)
         │
         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  STAGE 1.5: Element Detection  (src/element_detection.py)   │
+│  STAGE 2: Geometric Segmentation  (src/element_detection.py)│
 │  • Probabilistic Hough Transform → line segments            │
 │  • Line classification: horizontal / vertical / diagonal    │
 │  • Contour detection → part outlines (bounding boxes)       │
@@ -63,7 +63,7 @@ Input Image (PNG/JPG)
         │
         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  STAGE 2: OCR  (src/vlm_reader.py)                          │
+│  STAGE 3: Dimension Extraction (OCR)  (src/vlm_reader.py)   │
 │  • EasyOCR: CRAFT text detector + CRNN recognizer           │
 │  • Pass 1: Full image at 2× upscale                         │
 │  • Pass 2: BOM region at 3× upscale (higher resolution)     │
@@ -77,39 +77,23 @@ Input Image (PNG/JPG)
         │
         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  STAGE 3: Classification  (src/validation.py)               │
+│  STAGE 4: Classification  (src/validation.py)               │
 │                                                             │
 │  Pass 1 — Regex classifier (16 types):                      │
-│    dimension_value   → bare number (50, 75.5)               │
-│    diameter_callout  → Ø prefix (Ø30, DIA 21)               │
-│    radius_callout    → R prefix (R10, R5.5)                 │
-│    thread_spec       → M prefix (M16×2, M30)                │
-│    hole_callout      → HOLE keyword (2 HOLES DIA 10)        │
-│    dimension_with_note → THICK/DEEP/LONG (12 THICK)         │
-│    tolerance         → ±, H7/h6, +0.1/-0.0                 │
-│    section_marker    → X-X, A-A (Cat1/3 only)               │
-│    spacing_annotation → EQUI-SP                             │
-│    material_code     → MS, CI, FS, GM, HCS, MCS             │
-│    material_name     → Brass, Cast Iron, Mild Steel         │
-│    part_name         → Valve, Gland, Sleeve, Pin            │
-│    bom_header        → NAME, MATERIAL, QTY, NO              │
-│    balloon_number    → single digit (Cat2/3 only)           │
-│    quantity          → 1-2 digit number (Cat2 only)         │
-│    unknown           → no match                             │
+│    dimension_value, diameter_callout, radius_callout,        │
+│    thread_spec, hole_callout, dimension_with_note,           │
+│    section_marker, spacing_annotation, material_code,        │
+│    material_name, part_name, bom_header, balloon_number,     │
+│    quantity, tolerance, unknown                              │
 │                                                             │
 │  Pass 2 — ML classifier fallback (src/text_classifier.py):  │
-│    • TF-IDF char n-grams (1-4 chars, 1473 features)         │
-│    • 35 engineered features (digit ratio, starts_phi, etc.) │
+│    • TF-IDF char n-grams + 35 engineered features           │
 │    • LinearSVC + CalibratedClassifierCV                     │
-│    • Trained on 888 samples, CV accuracy 72.6%, F1=0.85     │
 │    • Only activates for "unknown" entries                   │
 │    • Rescued 7.2% of unknowns → meaningful types           │
 │                                                             │
 │  BOM Reconstruction (Cat2 only):                            │
-│    • Detect BOM region from part_name/material anchors      │
-│    • Detect column layout (NO | NAME | MATERIAL | QTY)      │
-│    • Group entries by y-proximity into rows                 │
-│    • Infer part_no from nearest balloon when column absent  │
+│    • Spatial column detection + row grouping                │
 │    • OCR name correction (Bras→Brass, Glanc→Gland)         │
 │                                                             │
 │  Output: _structured.json  (type, parsed fields, bom_rows) │
@@ -117,110 +101,56 @@ Input Image (PNG/JPG)
         │
         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  STAGE 4: Geometric Association  (src/association.py)       │
+│  STAGE 5: Geometric Association  (src/association.py)       │
 │                                                             │
-│  Links each annotation to the nearest geometric element:    │
+│  Links each dimension to the nearest geometric element:     │
 │    dimension_value   → nearest H/V line (extension tracing) │
 │    diameter_callout  → nearest circle or line               │
 │    hole_callout      → nearest circle                       │
-│    thread_spec       → nearest line                         │
 │    balloon_number    → nearest circle (Cat2/3)              │
 │    section_marker    → nearest diagonal line                │
-│    material/part/BOM → nearest contour                      │
 │                                                             │
 │  Distance metrics:                                          │
 │    Lines:    perpendicular distance to finite segment       │
-│    Circles:  signed distance to circle edge (neg=inside)    │
+│    Circles:  signed distance to circle edge                 │
 │    Contours: min distance to bounding box perimeter         │
 │                                                             │
-│  Cat1 special: extension line tracing                       │
-│    → finds the perpendicular extension line                 │
-│    → follows it to the actual part contour                  │
-│                                                             │
-│  Output: _associations.json  (annotation → element + dist) │
-│  Visualization: colored lines from annotation to geometry   │
+│  Output: _associations.json + _associations.png             │
 └─────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  STAGE 4.5: Semantic Labelling  (src/semantic_labeller.py)  │
+│  STAGE 6: Semantic Labelling  (src/semantic_labeller.py)    │
 │                                                             │
-│  Assigns human-readable meaning to each dimension:          │
-│    Priority 1: text content (THICK→thickness, PCD→pitch_circle) │
-│    Priority 2: (type, element_type) rule table              │
-│      Ø + circle    → bore_diameter                          │
-│      Ø + h-line    → shaft_diameter                         │
-│      number + h-line → length                               │
-│      number + v-line → height                               │
-│      R + any       → radius                                 │
-│      M16×2 + any   → thread_size                            │
-│    Priority 3: annotation type fallback                     │
-│                                                             │
-│  Labels: length, height, depth, thickness, bore_diameter,   │
-│    shaft_diameter, hole_diameter, thread_size, radius,      │
-│    chamfer, pitch_circle, spacing, groove_depth, keyway,    │
-│    gear_module, gear_spec, coil_spec                        │
+│  Assigns meaning to each dimension:                         │
+│    Ø + circle    → bore_diameter                            │
+│    Ø + h-line    → shaft_diameter                           │
+│    number + h-line → length                                 │
+│    number + v-line → height                                 │
+│    THICK keyword → thickness                                │
+│    PCD keyword   → pitch_circle                             │
 │                                                             │
 │  Output: _labelled.json  (semantic_label, direction)        │
 └─────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  STAGE 5A: Part Attribution  (src/part_attribution.py)      │
+│  STAGE 7: Part Attribution  (src/part_attribution.py)       │
 │                                                             │
-│  Cat1: all dimensions → single part (from filename)         │
-│                                                             │
-│  Cat2 (3-strategy chain):                                   │
-│    Strategy 1: nearest balloon → BOM lookup → part name     │
-│    Strategy 2: balloon found but BOM empty →                │
-│                nearest part_name OCR text                   │
-│    Strategy 3: no balloon → nearest part_name + material    │
-│                                                             │
+│  Cat1: all dimensions → single part                         │
+│  Cat2: nearest balloon → BOM lookup → part name + material  │
 │  Cat3: nearest balloon + nearest part_name OCR text         │
-│                                                             │
-│  Confidence levels:                                         │
-│    high:         balloon dist <50px AND BOM has name        │
-│    medium:       balloon dist <150px AND BOM has name       │
-│    low:          BOM has name but balloon far               │
-│    balloon_only: balloon found but no BOM name              │
 │                                                             │
 │  Output: _attributed.json  (dimension → part name/material) │
 └─────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  STAGE 5B: Tolerance Stack-Up  (src/tolerance_stackup.py)   │
+│  STAGE 8: Web Dashboard  (app/app.py)                       │
 │                                                             │
-│  Parses tolerance annotations:                              │
-│    ±0.5  → symmetric tolerance                              │
-│    +0.1/-0.0 → bilateral tolerance                          │
-│    H7/h6 → ISO fit specification (lookup table)             │
-│    H7    → hole-only fit                                    │
-│                                                             │
-│  Links tolerances to nearest dimension (spatial proximity)  │
-│                                                             │
-│  Computes stack-up chains:                                  │
-│    Worst-case: sum of all individual tolerances             │
-│    RSS: root-sum-square (statistical method)                │
-│                                                             │
-│  Output: _stackup.json  (dims, tols, fits, WC, RSS)         │
-└─────────────────────────────────────────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────────────────────────┐
-│  STAGE 6: Web Dashboard  (app/app.py + app/templates/)      │
-│                                                             │
-│  Flask web app at http://localhost:5000                     │
-│  Upload any drawing → full pipeline runs → results shown   │
-│                                                             │
-│  Displays:                                                  │
-│    • 3 visualization tabs: Original / OCR / Associations    │
-│    • Annotations table with type + semantic label + conf    │
-│    • Part attribution cards (part no, name, material, dims) │
-│    • BOM table (Cat2 only)                                  │
-│    • Tolerance stack-up (worst-case ± mm, RSS ± mm)         │
-│    • Semantic dimension table (what each dimension means)   │
-│    • Download buttons for all 5 JSON outputs                │
+│  Flask app at http://localhost:5000                         │
+│  Upload drawing → full pipeline → results displayed         │
+│  Visualizations, tables, downloads                          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -315,7 +245,6 @@ Input Image (PNG/JPG)
 | `_associations.png` | Visualization: colored lines from annotation to geometry |
 | `_attributed.json` | Each dimension linked to part name + material |
 | `_labelled.json` | Semantic labels: length, height, bore_diameter, etc. |
-| `_stackup.json` | Tolerance chain: nominal, worst-case ±mm, RSS ±mm |
 
 ---
 
@@ -392,15 +321,15 @@ python app/app.py
 ```
 src/
   preprocessing.py      Stage 1: CLAHE, sharpening, binarization, BOM detection
-  element_detection.py  Stage 1.5: Hough lines, circles, contours
-  vlm_reader.py         Stage 2: EasyOCR 2-pass with colored visualization
-  validation.py         Stage 3: Regex + ML classifier, BOM reconstruction
-  text_classifier.py    Stage 3-ML: TF-IDF + SVM trained classifier
-  gdt_detector.py       Stage 3-YOLO: GD&T symbol detector (YOLOv8)
-  association.py        Stage 4: Geometric association with distance metrics
-  semantic_labeller.py  Stage 4.5: Dimension semantic labelling
-  part_attribution.py   Stage 5A: Dimension → part name attribution
-  tolerance_stackup.py  Stage 5B: ISO tolerance stack-up computation
+  element_detection.py  Stage 2: Hough lines, circles, contours (segmentation)
+  vlm_reader.py         Stage 3: EasyOCR 2-pass dimension extraction
+  validation.py         Stage 4: Regex + ML classifier, BOM reconstruction
+  text_classifier.py    Stage 4-ML: TF-IDF + SVM trained classifier
+  gdt_detector.py       Stage 4-YOLO: GD&T symbol detector (YOLOv8)
+  association.py        Stage 5: Geometric association with distance metrics
+  semantic_labeller.py  Stage 6: Dimension semantic labelling
+  part_attribution.py   Stage 7: Dimension → part name attribution
+  tolerance_stackup.py  (Optional) ISO tolerance stack-up computation
   pipeline.py           End-to-end single-image pipeline wrapper
 
 app/
@@ -410,4 +339,5 @@ app/
 evaluate_full.py        18-metric evaluation report
 batch_process.py        Full dataset batch runner
 train_gdt_model.py      YOLOv8 GD&T model training script
+PROJECT_REPORT.md       This report
 ```
