@@ -30,6 +30,11 @@ try:
 except ImportError:
     from src.part_attribution import attribute_file as attribute_parts
 
+try:
+    from semantic_labeller import label_file as label_semantics
+except ImportError:
+    from src.semantic_labeller import label_file as label_semantics
+
 
 
 def process_category(category_dir, results_dir):
@@ -73,6 +78,15 @@ def process_category(category_dir, results_dir):
                     attr_result = attribute_parts(structured_path, results_dir)
                 except Exception as e:
                     print(f"  Attribution WARNING: {e}")
+
+            # Semantic Labelling
+            assoc_path = os.path.join(results_dir, f"{basename}_associations.json")
+            sem_result = None
+            if os.path.exists(assoc_path):
+                try:
+                    sem_result = label_semantics(assoc_path, results_dir)
+                except Exception as e:
+                    print(f"  Semantic labelling WARNING: {e}")
 
             # confidence stats
             high_conf = sum(1 for r in results if r['confidence'] > 0.9)

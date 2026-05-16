@@ -335,10 +335,95 @@ def attribution_metrics():
 
 
 # ============================================================
-# 5. Print Full Report
+# 5. Semantic Labelling Metrics
 # ============================================================
 
-def print_full_report(ocr, clf, assoc, attr):
+def semantic_metrics():
+    """
+    Compute semantic labelling metrics from _labelled.json files.
+
+    Semantic labelling assigns a human-readable meaning to each dimension:
+    length, height, bore_diameter, thread_size, etc.
+
+    Evaluation approach (no ground truth needed):
+    - Labelled rate: % of DIMENSION annotations that got a non-unknown label
+    - Label distribution: what types of dimensions were found
+    - Consistency: same text → same label across images
+    - Coverage per category
+    """
+    files = sorted(glob.glob(os.path.join(RESULTS_DIR, "*_labelled.json")))
+
+    DIMENSION_LABELS = {
+        "length", "height", "depth", "thickness", "bore_diameter",
+        "shaft_diameter", "hole_diameter", "thread_size", "radius",
+        "chamfer", "pitch_circle", "spacing", "groove_depth",
+        "keyway", "width", "gear_module", "gear_spec", "coil_spec",
+    }
+
+    total_ann       = 0
+    total_dim_ann   = 0   # annotations that are dimension types
+    total_labelled  = 0   # dimension annotations with non-unknown label
+    label_counts    = Counter()
+    per_cat         = defaultdict(lambda: dict(dim_ann=0, labelled=0))
+    text_label_map  = {}  # text → set of labels (for consistency check)
+
+    for f in files:
+        data = load_json(f)
+        if not data:
+            continue
+        cat = data.get('image_category', 0)
+
+        for ann in data.get('annotations', []):
+            ann_type = ann.get('annotation_type', 'unknown')
+            label    = ann.get('semantic_label', 'unknown')
+            text     = ann.get('annotation_text', '')
+            total_ann += 1
+
+            # Only count dimension-type annotations for labelling rate
+            from semantic_labeller import LABEL_DESCRIPTIONS
+            if label in DIMENSION_LABELS:
+                total_dim_ann += 1
+                total_labelled += 1
+                label_counts[label] += 1
+                per_cat[cat]['dim_ann'] += 1
+                per_cat[cat]['labelled'] += 1
+                # Track text → label consistency
+                if text not in text_label_map:
+                    text_label_map[text] = set()
+                text_label_map[text].add(label)
+            elif ann_type in ('dimension_value', 'diameter_callout', 'radius_callout',
+                              'thread_spec', 'hole_callout', 'dimension_with_note'):
+                total_dim_ann += 1
+                per_cat[cat]['dim_ann'] += 1
+
+    # Consistency: texts that always get the same label
+    consistent = sum(1 for labels in text_label_map.values() if len(labels) == 1)
+    consistency_rate = pct(consistent, len(text_label_map)) if text_label_map else 0
+
+    return {
+        "images":              len(files),
+        "total_annotations":   total_ann,
+        "dimension_annotations": total_dim_ann,
+        "labelled_dimensions": total_labelled,
+        "labelled_rate_pct":   pct(total_labelled, total_dim_ann),
+        "label_consistency_pct": consistency_rate,
+        "label_distribution":  dict(label_counts.most_common()),
+        "per_category": {
+            f"cat{k}": {
+                "dim_annotations": v['dim_ann'],
+                "labelled":        v['labelled'],
+                "labelled_pct":    pct(v['labelled'], v['dim_ann']),
+            }
+            for k, v in sorted(per_cat.items()) if k > 0
+        }
+    }
+
+
+# ============================================================
+# 6. Print Full Report
+# ============================================================
+
+def print_full_report(ocr, clf, assoc, attr, sem):
     W = 72
     SEP = "=" * W
     DIV = "-" * W
@@ -453,6 +538,28 @@ def print_full_report(ocr, clf, assoc, attr):
               f"named {v['named_pct']:5.1f}% | "
               f"high-conf {v['high_conf_pct']:5.1f}%")
 
+    # ── SEMANTIC LABELLING ────────────────────────────────────────────────
+    print(f"\n{DIV}")
+    print("  SEMANTIC LABELLING  (What each dimension means)")
+    print(DIV)
+    print(f"  {'Metric':<40} {'Value':>10}")
+    print(f"  {'─'*40} {'─'*10}")
+    print(f"  {'Dimension annotations':<40} {sem['dimension_annotations']:>10,}")
+    print(f"  {'Semantically labelled':<40} {sem['labelled_dimensions']:>10,}")
+    print(f"  {'Labelled rate %':<40} {sem['labelled_rate_pct']:>9.2f}%")
+    print(f"  {'Label consistency %':<40} {sem['label_consistency_pct']:>9.2f}%")
+    print(f"\n  Label distribution:")
+    print(f"  {'Label':<22} {'Count':>6} {'%':>6}")
+    print(f"  {'─'*22} {'─'*6} {'─'*6}")
+    total_labelled = sem['labelled_dimensions']
+    for lbl, cnt in sem['label_distribution'].items():
+        bar = "█" * max(1, int(cnt / max(1, total_labelled) * 30))
+        print(f"  {lbl:<22} {cnt:>6} {pct(cnt, total_labelled):>5.1f}%  {bar}")
+    print(f"\n  Per-category labelled rates:")
+    for cat, v in sem['per_category'].items():
+        print(f"    {cat}: {v['dim_annotations']:4d} dim annotations | "
+              f"labelled {v['labelled_pct']:5.1f}%")
+
     # ── SUMMARY SCORECARD ─────────────────────────────────────────────────
     print(f"\n{SEP}")
     print("  SUMMARY SCORECARD")
@@ -477,6 +584,8 @@ def print_full_report(ocr, clf, assoc, attr):
         ("Cat3 association match rate %",        assoc['per_category'].get('cat3', {}).get('match_rate_pct', 0), 70.0, True),
         ("Part attribution named rate %",        attr['named_rate_pct'],                  70.0,  True),
         ("Part attribution high-conf rate %",    attr['high_conf_rate_pct'],              50.0,  True),
+        ("Semantic labelled rate %",             sem['labelled_rate_pct'],                70.0,  True),
+        ("Semantic label consistency %",         sem['label_consistency_pct'],            85.0,  True),
     ]
 
     passed = 0
@@ -495,20 +604,25 @@ def print_full_report(ocr, clf, assoc, attr):
 # ============================================================
 
 if __name__ == "__main__":
-    print("Computing evaluation metrics...")
-    ocr  = ocr_metrics()
-    clf  = classification_metrics()
-    assoc = association_metrics()
-    attr = attribution_metrics()
+    import sys
+    sys.path.insert(0, 'src')
 
-    print_full_report(ocr, clf, assoc, attr)
+    print("Computing evaluation metrics...")
+    ocr   = ocr_metrics()
+    clf   = classification_metrics()
+    assoc = association_metrics()
+    attr  = attribution_metrics()
+    sem   = semantic_metrics()
+
+    print_full_report(ocr, clf, assoc, attr, sem)
 
     # Save JSON
     report = {
-        "stage2_ocr": ocr,
+        "stage2_ocr":            ocr,
         "stage3_classification": clf,
-        "stage4_association": assoc,
-        "part_attribution": attr,
+        "stage4_association":    assoc,
+        "part_attribution":      attr,
+        "semantic_labelling":    sem,
     }
     out = "results/full_evaluation_report.json"
     with open(out, 'w', encoding='utf-8') as f:
