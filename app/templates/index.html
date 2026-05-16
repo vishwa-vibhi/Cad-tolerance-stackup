@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CAD Tolerance Stack-Up Analysis Tool</title>
+<title>CAD Dimension Extraction & Association Tool</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; }
@@ -89,13 +89,6 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f1117; color: #
 .bom-table .qty       { color: #34d399; text-align: center; }
 .null-val { color: #374151; font-style: italic; }
 
-.stackup-box { background: #1a1f2e; border: 1px solid #2d3448; border-radius: 8px; padding: 14px; }
-.stackup-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #1e2535; font-size: 0.83rem; }
-.stackup-row:last-child { border-bottom: none; }
-.stackup-label { color: #8892a4; }
-.stackup-value { color: #fff; font-weight: 600; font-family: monospace; }
-.stackup-value.highlight { color: #f59e0b; }
-
 .part-card { background: #1a1f2e; border: 1px solid #2d3448; border-radius: 8px; padding: 11px 13px; margin-bottom: 9px; }
 .part-card .part-header { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; }
 .part-no-badge { background: #2563eb; color: #fff; font-size: 0.72rem; font-weight: 700; padding: 2px 7px; border-radius: 10px; }
@@ -123,8 +116,8 @@ select { background: #1e2535; color: #c0c8d8; border: 1px solid #2d3448; border-
 
 <div class="header">
   <div>
-    <h1>⚙️ CAD Tolerance Stack-Up Analysis Tool</h1>
-    <div class="subtitle">CV Pipeline · EasyOCR · OpenCV · Semantic Labelling · Stage 1–5</div>
+    <h1>⚙️ CAD Dimension Extraction & Association Tool</h1>
+    <div class="subtitle">CV Pipeline · EasyOCR · OpenCV · Semantic Labelling</div>
   </div>
   <span class="badge">Final Project</span>
 </div>
@@ -205,7 +198,7 @@ select { background: #1e2535; color: #c0c8d8; border: 1px solid #2d3448; border-
       </div>
 
       <div class="card">
-        <div class="card-header"><h3 id="bom-title">📋 BOM &amp; Stack-Up</h3></div>
+        <div class="card-header"><h3 id="bom-title">📋 Bill of Materials</h3></div>
         <div class="card-body" id="bom-body"></div>
       </div>
     </div>
@@ -306,7 +299,6 @@ function renderResults(data) {
   const asc = s.association || {};
   const sem = s.semantic || {};
   const atr = s.attribution || {};
-  const stk = s.stackup || {};
   const cat = val.image_category || 0;
 
   document.getElementById('result-meta').textContent =
@@ -319,7 +311,7 @@ function renderResults(data) {
     { val: asc.matched || 0,          lbl: 'Associated' },
     { val: sem.labelled || 0,         lbl: 'Labelled' },
     { val: atr.named || 0,            lbl: 'Parts Named' },
-    { val: stk.dimensions || 0,       lbl: 'Dimensions' },
+    { val: val.meaningful || 0,       lbl: 'Meaningful' },
   ].map(s => `<div class="stat-box"><div class="val">${s.val}</div><div class="lbl">${s.lbl}</div></div>`).join('');
 
   // Image tabs
@@ -380,7 +372,7 @@ function renderResults(data) {
     partsBody.innerHTML = '<p style="color:#4b5563;font-size:0.83rem">No part attribution for this drawing.</p>';
   }
 
-  // BOM + Stack-up
+  // BOM table
   const bomRows = val.bom_rows || [];
   let bsHtml = '';
   if (bomRows.length > 0) {
@@ -401,24 +393,7 @@ function renderResults(data) {
     }
   }
 
-  const sk = stk.stackup_linear;
-  if (sk && sk.n_dimensions > 0) {
-    bsHtml += `<h4 style="font-size:0.82rem;color:#8892a4;margin:14px 0 9px;">Tolerance Stack-Up (Linear)</h4>
-    <div class="stackup-box">
-      <div class="stackup-row"><span class="stackup-label">Dimensions in chain</span><span class="stackup-value">${sk.n_dimensions}</span></div>
-      <div class="stackup-row"><span class="stackup-label">Total nominal</span><span class="stackup-value">${sk.total_nominal_mm} mm</span></div>
-      <div class="stackup-row"><span class="stackup-label">Worst-case tolerance</span><span class="stackup-value highlight">±${(sk.worst_case_tolerance_mm/2).toFixed(4)} mm</span></div>
-      <div class="stackup-row"><span class="stackup-label">RSS tolerance</span><span class="stackup-value">±${(sk.rss_tolerance_mm/2).toFixed(4)} mm</span></div>
-    </div>`;
-  }
-
-  if (stk.fit_types && stk.fit_types.length > 0) {
-    bsHtml += `<h4 style="font-size:0.82rem;color:#8892a4;margin:14px 0 7px;">Fit Specifications</h4>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;">` +
-    stk.fit_types.map(f => `<span class="type-badge t-tolerance">${esc(f)}</span>`).join('') + `</div>`;
-  }
-
-  if (!bsHtml) bsHtml = '<p style="color:#4b5563;font-size:0.83rem">No BOM or tolerance data found.</p>';
+  if (!bsHtml) bsHtml = '<p style="color:#4b5563;font-size:0.83rem">No BOM data found for this drawing.</p>';
   document.getElementById('bom-body').innerHTML = bsHtml;
 
   // Semantic dimension table
@@ -442,7 +417,6 @@ function renderResults(data) {
     ['structured',   '📄 Structured JSON'],
     ['associations', '🔗 Associations JSON'],
     ['attributed',   '🔩 Attribution JSON'],
-    ['stackup',      '📐 Stack-Up JSON'],
     ['labelled',     '🏷️ Semantic Labels JSON'],
   ].map(([t,l]) =>
     `<a href="/download/${currentJobId}/${t}" class="btn btn-secondary" style="text-decoration:none;font-size:0.8rem;">${l}</a>`

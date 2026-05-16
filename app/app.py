@@ -1,15 +1,13 @@
 """
-Stage 5: Flask Web Dashboard — CAD Tolerance Stack-Up Analysis Tool
+Flask Web Dashboard — CAD Dimension Extraction & Association Tool
 
 Upload a 2D engineering drawing image and get:
   - Annotated visualization with colored overlays
   - Structured annotations table with semantic labels
   - Association visualization (dimension → geometric element)
   - BOM table (Category 2 assembly drawings)
-  - Tolerance stack-up summary
   - Part attribution (dimension → part name)
   - Semantic dimension labels (length, height, bore_diameter, etc.)
-  - ML classifier results
   - Download JSON outputs
 
 Run:
@@ -33,7 +31,6 @@ from vlm_reader       import read_full_image, get_ocr
 from validation       import validate_file
 from association      import associate_file
 from part_attribution import attribute_file
-from tolerance_stackup import analyse_file
 from semantic_labeller import label_file
 
 app = Flask(__name__)
@@ -188,21 +185,6 @@ def analyse():
                 "confidence_counts": attr.get("confidence_counts", {}),
             }
 
-        # ── Tolerance Stack-Up ────────────────────────────────────────────
-        print(f"[{job_id}] Tolerance Stack-Up...")
-        stackup = analyse_file(structured_path, output_dir=job_dir)
-        if stackup:
-            results["stages"]["stackup"] = {
-                "dimensions":       stackup["summary"]["total_dimensions"],
-                "tolerances":       stackup["summary"]["total_tolerances"],
-                "fits":             stackup["summary"]["total_fits"],
-                "fit_types":        stackup["summary"]["fit_types_found"],
-                "stackup_linear":   stackup.get("stackup_linear"),
-                "stackup_diameter": stackup.get("stackup_diameter"),
-                "parsed_dims":      stackup.get("dimensions", []),
-                "parsed_tols":      stackup.get("tolerances", []),
-            }
-
         results["elapsed_sec"] = round(time.time() - t_start, 1)
 
         # ── Visualization images ──────────────────────────────────────────
@@ -236,7 +218,6 @@ def download(job_id, filetype):
         'structured':   '_structured.json',
         'associations': '_associations.json',
         'attributed':   '_attributed.json',
-        'stackup':      '_stackup.json',
         'labelled':     '_labelled.json',
     }
     suffix = suffix_map.get(filetype)
@@ -250,7 +231,7 @@ def download(job_id, filetype):
 
 if __name__ == '__main__':
     print("\n" + "=" * 60)
-    print("  CAD Tolerance Stack-Up Analysis Tool")
+    print("  CAD Dimension Extraction & Association Tool")
     print("  Open: http://localhost:5000")
     print("=" * 60 + "\n")
     app.run(debug=False, host='0.0.0.0', port=5000)
