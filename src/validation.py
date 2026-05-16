@@ -277,6 +277,26 @@ def normalise_text(text: str) -> str:
     # Step 3f: Qty/Oty OCR misreads → QTY
     t = re.sub(r'^[OQ]t[yi]:?$', 'QTY', t, flags=re.IGNORECASE)
 
+    # Step 3g: Known OCR misreads for part/material names
+    _OCR_WORD_FIXES = {
+        'BRAS': 'BRASS', 'BRAS:': 'BRASS',
+        'GLANC': 'GLAND', 'GLANC:': 'GLAND',
+        'NU:': 'NUT',
+        'SPINDL': 'SPINDLE',
+        'BONNIT': 'BONNET',
+        'SLEVE': 'SLEEVE',
+        'HANDWHEL': 'HANDWHEEL',
+        'VLAVE': 'VALVE', 'VLVE': 'VALVE',
+        'SPRIG': 'SPRING',
+        'ALUMNUM': 'ALUMINUM', 'ALUMINIUM': 'ALUMINUM',
+        'BRONZ': 'BRONZE',
+        'MATL': 'MATERIAL', 'MAT.': 'MATERIAL',
+        'NAMIC': 'DYNAMIC',
+    }
+    upper_t = t.upper().strip()
+    if upper_t in _OCR_WORD_FIXES:
+        t = _OCR_WORD_FIXES[upper_t].title() if any(c.islower() for c in t) else _OCR_WORD_FIXES[upper_t]
+
     return t
 
 
@@ -698,14 +718,39 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
     if category != 2:
         return []
 
+def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
+    """
+    Group spatially-adjacent BOM fragments into structured rows.
+
+    Only runs for Category 2 (assembly drawings with BOM tables).
+    Uses y-centroid proximity to group entries into rows, then assigns
+    roles by spatial column position.
+
+    Strategy:
+    - Detect BOM region from part_name/material anchor entries
+    - Detect column layout from anchor x-positions
+    - Group entries by y-proximity into rows
+    - Assign part_no/part_name/material/qty by column position
+    - When part_no column is absent, infer from nearest balloon in drawing
+
+    Args:
+        classified_entries: List of classified OCR entry dicts.
+        category:           Drawing category (1, 2, or 3).
+
+    Returns:
+        List of BOM row dicts with keys: part_no, part_name, material, qty.
+        Returns [] for non-Category-2 images or if no BOM entries found.
+    """
+    if category != 2:
+        return []
+
     BOM_TYPES = {'balloon_number', 'part_name', 'material_code', 'material_name', 'quantity'}
-    Y_TOLERANCE = 16  # pixels — row grouping tolerance
+    Y_TOLERANCE = 16
 
-    # Detect BOM region and column layout
     bom_region = _detect_bom_region(classified_entries)
-    col_ranges = _detect_bom_columns(classified_entries, bom_region)
+    col_ranges  = _detect_bom_columns(classified_entries, bom_region)
 
-    # ── Filter to BOM-relevant entries inside the BOM region ─────────────
+    # ── Filter entries to BOM region ──────────────────────────────────────
     relevant = []
     for entry in classified_entries:
         if entry.get("type") not in BOM_TYPES:
@@ -725,7 +770,6 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
     if not relevant:
         return []
 
-    # ── Sort top-to-bottom, then left-to-right ────────────────────────────
     def y_center(item):
         _, box = item
         return box[1] + box[3] / 2.0
@@ -736,10 +780,10 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
 
     relevant.sort(key=y_center)
 
-    # ── Group into rows by y-centroid proximity ───────────────────────────
+    # ── Group into rows ───────────────────────────────────────────────────
     rows = []
     current_row = [relevant[0]]
-    current_y = y_center(relevant[0])
+    current_y   = y_center(relevant[0])
 
     for item in relevant[1:]:
         if abs(y_center(item) - current_y) <= Y_TOLERANCE:
@@ -747,18 +791,57 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
         else:
             rows.append(current_row)
             current_row = [item]
-            current_y = y_center(item)
+            current_y   = y_center(item)
     rows.append(current_row)
+
+    # ── Determine if part_no column exists ───────────────────────────────
+    # If col_ranges has a valid (non-full-width) part_no range, use it.
+    # Otherwise, infer part_no from the nearest balloon in the full drawing.
+    has_partno_col = False
+    if col_ranges:
+        pno_r = col_ranges.get('part_no', (0, 99999))
+        pname_r = col_ranges.get('part_name', (0, 99999))
+        # part_no column is valid only if it's narrower than part_name column
+        pno_width   = pno_r[1] - pno_r[0]
+        pname_width = pname_r[1] - pname_r[0]
+        has_partno_col = pno_width < pname_width * 0.8
+
+    # Build a y → nearest balloon lookup from the FULL drawing (not just BOM region)
+    # for inferring part_no when the BOM doesn't have a visible part_no column
+    all_balloons = [
+        (e, _get_box_safe(e))
+        for e in classified_entries
+        if e.get("type") == "balloon_number" and _get_box_safe(e) is not None
+    ]
+
+    def nearest_balloon_to_y(row_y, bom_x_center):
+        """Find the balloon number closest in y to a BOM row."""
+        best_entry = None
+        best_dist  = 999999
+        for e, box in all_balloons:
+            cy = box[1] + box[3] / 2.0
+            cx = box[0] + box[2] / 2.0
+            # Prefer balloons that are in the BOM region x-range
+            if bom_region and not (bom_region[0] <= cx <= bom_region[2]):
+                continue
+            dist = abs(cy - row_y)
+            if dist < best_dist:
+                best_dist  = dist
+                best_entry = e
+        if best_entry and best_dist < Y_TOLERANCE * 2:
+            return best_entry.get("parsed", {}).get("number")
+        return None
 
     # ── Assign roles within each row ──────────────────────────────────────
     bom_rows = []
     for row_items in rows:
-        row_items.sort(key=x_center)  # left → right
+        row_items.sort(key=x_center)
 
         part_no       = None
         part_name_val = None
         material      = None
         qty           = None
+        row_y         = y_center(row_items[0])
 
         for entry, box in row_items:
             t      = entry.get("type")
@@ -771,7 +854,7 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
                 mat_range   = col_ranges.get('material',  (0, 0))
                 qty_range   = col_ranges.get('qty',       (0, 0))
 
-                in_pno   = pno_range[0]   <= cx <= pno_range[1]
+                in_pno   = has_partno_col and (pno_range[0]   <= cx <= pno_range[1])
                 in_pname = pname_range[0] <= cx <= pname_range[1]
                 in_mat   = mat_range[0]   <= cx <= mat_range[1]
                 in_qty   = qty_range[0]   <= cx <= qty_range[1]
@@ -783,35 +866,31 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
                         part_no = parsed.get("qty")
                 elif in_pname:
                     if t == 'part_name' and part_name_val is None:
-                        part_name_val = parsed.get("name", entry.get("text", "")).strip()
-                        # Clean OCR artefacts from part names
-                        part_name_val = part_name_val.rstrip(':').strip()
+                        part_name_val = parsed.get("name", entry.get("text", "")).rstrip(':').strip()
                 elif in_mat:
                     if t == 'material_code' and material is None:
                         material = parsed.get("code")
                     elif t == 'material_name' and material is None:
-                        raw = parsed.get("name", entry.get("text", ""))
-                        # Clean OCR artefacts: "Bras:" → "Brass", "Glanc" → "Gland"
-                        material = _clean_ocr_name(raw)
+                        material = _clean_ocr_name(parsed.get("name", entry.get("text", "")))
                 elif in_qty:
                     if t == 'quantity' and qty is None:
                         qty = parsed.get("qty")
                     elif t == 'balloon_number' and qty is None:
                         qty = parsed.get("number")
                 else:
-                    # Entry is in BOM region but doesn't fit any column —
-                    # assign by type as fallback
+                    # Fallback by type
                     if t == 'part_name' and part_name_val is None:
                         part_name_val = parsed.get("name", entry.get("text", "")).rstrip(':').strip()
-                    elif t in ('material_code', 'material_name') and material is None:
-                        raw = parsed.get("code") or parsed.get("name") or entry.get("text", "")
-                        material = _clean_ocr_name(raw)
+                    elif t == 'material_code' and material is None:
+                        material = parsed.get("code")
+                    elif t == 'material_name' and material is None:
+                        material = _clean_ocr_name(parsed.get("name", entry.get("text", "")))
                     elif t == 'quantity' and qty is None:
                         qty = parsed.get("qty")
-                    elif t == 'balloon_number' and part_no is None:
+                    elif t == 'balloon_number' and part_no is None and has_partno_col:
                         part_no = parsed.get("number")
             else:
-                # No column ranges — pure type-based assignment
+                # No column ranges — pure type-based
                 if t == 'balloon_number' and part_no is None:
                     part_no = parsed.get("number")
                 elif t == 'part_name' and part_name_val is None:
@@ -822,6 +901,11 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
                     material = _clean_ocr_name(parsed.get("name", entry.get("text", "")))
                 elif t == 'quantity' and qty is None:
                     qty = parsed.get("qty")
+
+        # If no part_no found from BOM column, infer from nearest balloon in drawing
+        if part_no is None and part_name_val is not None:
+            bom_cx = (bom_region[0] + bom_region[2]) / 2.0 if bom_region else 0
+            part_no = nearest_balloon_to_y(row_y, bom_cx)
 
         if any(v is not None for v in [part_no, part_name_val, material, qty]):
             bom_rows.append({
