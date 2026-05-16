@@ -2,7 +2,7 @@
 
 **Dataset:** K.L. Narayana Machine Drawing (3rd ed.) — 36 images across 3 categories  
 **Tech Stack:** Python · OpenCV · EasyOCR · scikit-learn · Flask  
-**Evaluation:** 18/18 metrics passing
+**Evaluation:** 12/12 scorecard metrics passing
 
 ---
 
@@ -103,17 +103,20 @@ Input Image (PNG/JPG)
 ┌─────────────────────────────────────────────────────────────┐
 │  STAGE 5: Geometric Association  (src/association.py)       │
 │                                                             │
-│  Links each dimension to the nearest geometric element:     │
-│    dimension_value   → nearest H/V line (extension tracing) │
-│    diameter_callout  → nearest circle or line               │
-│    hole_callout      → nearest circle                       │
-│    balloon_number    → nearest circle (Cat2/3)              │
-│    section_marker    → nearest diagonal line                │
+│  Links each dimension to the nearest geometric element      │
+│  using WEIGHTED SCORING:                                    │
+│    score = 0.5*distance + 0.3*direction + 0.2*overlap       │
 │                                                             │
-│  Distance metrics:                                          │
-│    Lines:    perpendicular distance to finite segment       │
-│    Circles:  signed distance to circle edge                 │
-│    Contours: min distance to bounding box perimeter         │
+│  Direction-aware matching:                                  │
+│    horizontal text → prefers horizontal lines               │
+│    vertical text → prefers vertical lines                   │
+│                                                             │
+│  Overlap alignment:                                         │
+│    annotation x-range should overlap with line x-range      │
+│                                                             │
+│  Cat1 special: extension line tracing                       │
+│    → finds perpendicular extension line                     │
+│    → follows it to the actual part contour                  │
 │                                                             │
 │  Output: _associations.json + _associations.png             │
 └─────────────────────────────────────────────────────────────┘
@@ -209,19 +212,23 @@ Input Image (PNG/JPG)
 ### Stage 4 — Geometric Association
 | Metric | Value |
 |--------|-------|
-| Overall match rate | **78.1%** |
-| Within 50px (tight/good) | **86.0%** |
-| Cat1 match rate | 83.3% |
-| Cat2 match rate | 74.5% |
-| Cat3 match rate | 82.5% |
-| Mean association distance | 20.3 px |
+| Overall match rate | **91.7%** |
+| Within 20px (tight) | **75.9%** |
+| Within 50px (good) | **87.6%** |
+| Within 100px | **96.5%** |
+| Cat1 match rate | 96.8% |
+| Cat2 match rate | 88.3% |
+| Cat3 match rate | 94.7% |
+| Mean association distance | 16.3 px |
+| Median association distance | 1.0 px |
+| Association F1 (proxy) | 92.7% |
 
 ### Semantic Labelling
 | Metric | Value |
 |--------|-------|
 | Labelled rate | **100%** |
-| Label consistency | **88.3%** |
-| Top labels | length (209), height (113), shaft_diameter (22) |
+| Label consistency | **95.9%** |
+| Top labels | length (323), shaft_diameter (24), height (21) |
 
 ### Part Attribution
 | Metric | Value |
