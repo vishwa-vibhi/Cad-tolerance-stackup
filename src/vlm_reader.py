@@ -147,11 +147,11 @@ def is_likely_junk(text, confidence, box):
     t = text.strip()
     if len(t) == 1 and not t.isalnum():
         return True
-    if len(t) == 1 and t.isdigit() and confidence < 0.85:
+    if len(t) == 1 and t.isdigit() and confidence < 0.70:
         return True
-    if box[3] < 5:
+    if box[3] < 4:
         return True
-    if t == '0':
+    if t == '0' and confidence < 0.8:
         return True
     # Pure punctuation strings
     if all(c in '.,;:!?-_/\\|()[]{}' for c in t):
@@ -211,9 +211,9 @@ def _run_ocr_on_image(ocr, img_bgr, scale_factor, offset_x=0, offset_y=0,
         img_bgr,
         detail=1,
         paragraph=False,
-        text_threshold=0.55,
-        low_text=0.30,
-        link_threshold=0.35,
+        text_threshold=0.45,
+        low_text=0.25,
+        link_threshold=0.30,
         rotation_info=[90, 180, 270],
     )
 
@@ -250,7 +250,7 @@ def _run_ocr_on_image(ocr, img_bgr, scale_factor, offset_x=0, offset_y=0,
 # ============================================================
 # Main OCR function
 # ============================================================
-def read_full_image(image_path, output_dir="results", min_confidence=0.5,
+def read_full_image(image_path, output_dir="results", min_confidence=0.4,
                     filter_junk=True):
     """
     Run EasyOCR on the full image with region-aware upscaling.

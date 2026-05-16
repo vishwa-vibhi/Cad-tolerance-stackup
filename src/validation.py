@@ -257,6 +257,11 @@ def normalise_text(text: str) -> str:
     # Step 3a: leading-zero diameter fix — whole-string match only
     t = re.sub(r'^0(\d{2,})$', r'Ø\1', t)
 
+    # Step 3a2: normalize diameter symbol variants to standard Ø
+    t = t.replace('∅', 'Ø')   # U+2205 empty set → Ø
+    t = t.replace('Θ', 'Ø')   # U+0398 Greek theta → Ø (common OCR misread)
+    t = t.replace('Ã˜', 'Ø')  # broken UTF-8 → Ø
+
     # Step 3b: degree symbol fix — clean and broken UTF-8 encodings
     t = re.sub(r'(\d{1,3})"', r'\1°', t)           # 45" → 45°
     t = re.sub(r'(\d{1,3})\s*Â°', r'\1°', t)       # 45Â° → 45° (broken UTF-8)
@@ -390,7 +395,7 @@ def classify(text: str, category: int) -> str:
     if re.search(r'THD|THREAD', t, re.IGNORECASE):
         return "thread_spec"
     # Standalone Ø symbol (incomplete OCR — just the diameter symbol)
-    if t == 'Ø' or t == 'O/' or t == 'Ã˜':
+    if t in ('Ø', '∅', 'O/', 'Ã˜', 'Θ') or (len(t) == 1 and ord(t[0]) in (0x00D8, 0x2205, 0x0398)):
         return "diameter_callout"
     # TURNS, TEETH, SPIRAL — gear/spring specs
     if re.search(r'TURNS|TEETH|SPIRAL|COILS', t, re.IGNORECASE):
