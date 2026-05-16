@@ -341,3 +341,58 @@ batch_process.py        Full dataset batch runner
 train_gdt_model.py      YOLOv8 GD&T model training script
 PROJECT_REPORT.md       This report
 ```
+
+
+---
+
+## 11. Failure Analysis
+
+### Where the pipeline fails (honest assessment)
+
+**1. Unassociated Annotations (16 cases out of 1033 = 1.5%)**
+
+| Type | Text | Reason |
+|------|------|--------|
+| section_marker | ":" | OCR misread of section line label |
+| balloon_number | "2", "5", "9" | No circle detected near the balloon (circle too small or broken) |
+
+Root cause: balloon circles in some Cat2 drawings are partially occluded or too small for the circle detector (min_radius=8px threshold).
+
+**2. Remaining Unknown Annotations (70 cases = 6.8%)**
+
+| Text | Count | Why it's unknown |
+|------|-------|-----------------|
+| "E", "R", "N", "L" | 14 | Single uppercase letters — ambiguous (section marker? noise?) |
+| "Mall" | 3 | OCR misread of "Matl" (material) |
+| "Ia", "~", "Ø" | 6 | OCR artefacts / partial symbol reads |
+| "12 x 8", "Sz 4" | 2 | Compound specs not covered by regex |
+
+Root cause: single-letter annotations are genuinely ambiguous without visual context. The ML classifier can't distinguish "E" as a section marker vs OCR noise.
+
+**3. Low Confidence OCR (68 detections < 0.6 confidence)**
+
+| Text | Confidence | Issue |
+|------|-----------|-------|
+| "M30 x 2.5" | 0.57 | Thread spec with multiplication symbol |
+| "3 HOLES, DIA 6" | 0.58 | Compound annotation, small text |
+| "HOLE +OR DIA 3" | 0.54 | OCR struggling with engineering notation |
+
+Root cause: EasyOCR's CRNN recognizer has lower confidence on engineering-specific notation (thread specs, compound hole callouts) because its training data is general text.
+
+### Limitations
+
+1. **Dataset size (36 images)** — insufficient for statistical significance claims
+2. **No ground truth labels** — all metrics are self-supervised proxies
+3. **Single drawing style** — K.L. Narayana textbook only; untested on industrial CAD exports
+4. **No GD&T symbols** — the dataset doesn't contain feature control frames
+5. **BOM completeness** — OCR misses small text in BOM tables (8-10px height)
+
+### What would fix these
+
+| Limitation | Fix | Effort |
+|-----------|-----|--------|
+| Single letters ambiguous | Visual context model (LayoutLM) | High |
+| Low OCR on small text | Fine-tune PaddleOCR on engineering text | Medium |
+| Missing balloon circles | Lower circle detection threshold + ellipse fitting | Low |
+| Dataset size | Add 50+ industrial drawings | Medium |
+| No ground truth | Manually label 10 images | Low |
