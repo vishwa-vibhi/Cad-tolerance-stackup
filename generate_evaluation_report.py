@@ -628,9 +628,12 @@ def print_all_metrics():
     print("  TABLE 8: SEMANTIC LABELLING METRICS")
     print(SEP)
     lab_files = sorted(glob.glob(os.path.join(RESULTS_DIR, "*_labelled.json")))
-    total_lab = labelled = 0
+    total_lab = 0
     dim_ann_count = 0
+    dim_labelled_count = 0
     label_dist = Counter()
+    DIM_TYPES = {'dimension_value','diameter_callout','radius_callout',
+                 'thread_spec','hole_callout','dimension_with_note'}
     DIM_LABELS = {"length","height","depth","thickness","bore_diameter","shaft_diameter",
                   "hole_diameter","thread_size","radius","chamfer","pitch_circle","spacing",
                   "groove_depth","keyway","width","gear_module","gear_spec","coil_spec"}
@@ -638,30 +641,29 @@ def print_all_metrics():
         data = load_json(f)
         if not data: continue
         total_lab += data.get('total_annotations', 0)
-        labelled += data.get('labelled_count', 0)
-        for lbl, cnt in data.get('label_summary', {}).items():
-            label_dist[lbl] += cnt
-        # Count dimension-type annotations
         for ann in data.get('annotations', []):
-            if ann.get('annotation_type') in ('dimension_value','diameter_callout','radius_callout',
-                                               'thread_spec','hole_callout','dimension_with_note'):
+            ann_type = ann.get('annotation_type', 'unknown')
+            label = ann.get('semantic_label', 'unknown')
+            # Only count dimension-type annotations for the metric
+            if ann_type in DIM_TYPES:
                 dim_ann_count += 1
+                if label in DIM_LABELS:
+                    dim_labelled_count += 1
+                    label_dist[label] += 1
 
-    # Labelled rate should be based on dimension annotations only
-    sem_labelled_pct = labelled / max(dim_ann_count, 1) * 100 if dim_ann_count > 0 else 0
+    sem_labelled_pct = dim_labelled_count / max(dim_ann_count, 1) * 100
 
     print(f"\n  {'Metric':<40} {'Value':>10}")
     print(f"  {'-'*40} {'-'*10}")
     print(f"  {'Total Annotations':<40} {total_lab:>10}")
     print(f"  {'Dimension Annotations':<40} {dim_ann_count:>10}")
-    print(f"  {'Semantically Labelled':<40} {labelled:>10}")
-    print(f"  {'Labelled Rate (of dimensions) %':<40} {sem_labelled_pct:>9.1f}%")
+    print(f"  {'Dimensions with Semantic Label':<40} {dim_labelled_count:>10}")
+    print(f"  {'Semantic Labelled Rate %':<40} {sem_labelled_pct:>9.1f}%")
     print(f"\n  Label Distribution:")
     print(f"  {'Label':<22} {'Count':>6}")
     print(f"  {'-'*22} {'-'*6}")
-    for lbl, cnt in label_dist.most_common(10):
-        if lbl != 'unknown':
-            print(f"  {lbl:<22} {cnt:>6}")
+    for lbl, cnt in label_dist.most_common(12):
+        print(f"  {lbl:<22} {cnt:>6}")
 
     # ── 9. FINAL SCORECARD ────────────────────────────────────────────────
     print(f"\n{SEP}")
