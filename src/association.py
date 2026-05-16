@@ -167,39 +167,147 @@ def _get_elements(image_path):
 
 
 # ============================================================
-# Nearest-element finder functions
+# Weighted scoring for direction-aware association
 # ============================================================
 
-def _find_nearest_line(cx, cy, h_lines, v_lines, max_distance):
+def _compute_association_score(cx, cy, ann_box, element_data, element_type):
+    """
+    Compute a weighted association score (lower = better match).
+
+    Score = 0.5 * distance + 0.3 * direction_penalty + 0.2 * overlap_penalty
+
+    Direction penalty:
+      - If annotation is wider than tall (horizontal text) and element is
+        horizontal line → 0 penalty (good match)
+      - If annotation is wider than tall but element is vertical → penalty
+      - Vice versa for tall annotations
+
+    Overlap penalty:
+      - If annotation x-range overlaps with line x-range → 0 (good)
+      - If no overlap → penalty proportional to gap
+
+    Args:
+        cx, cy:        Annotation center
+        ann_box:       (x, y, w, h) of annotation
+        element_data:  [x1, y1, x2, y2] for lines, [cx, cy, r] for circles
+        element_type:  "line_horizontal", "line_vertical", "circle", etc.
+
+    Returns:
+        Float score (lower = better match)
+    """
+    x, y, w, h = ann_box
+
+    # Base distance
+    if element_type in ("line_horizontal", "line_vertical", "line_diagonal"):
+        x1, y1, x2, y2 = element_data[0], element_data[1], element_data[2], element_data[3]
+        dist = distance_point_to_segment(cx, cy, x1, y1, x2, y2)
+    elif element_type == "circle":
+        ecx, ecy, r = element_data[0], element_data[1], element_data[2]
+        dist = abs(distance_point_to_circle(cx, cy, ecx, ecy, r))
+    else:
+        dist = distance_point_to_contour(cx, cy, element_data[0], element_data[1],
+                                          element_data[2], element_data[3])
+
+    # Direction penalty
+    direction_penalty = 0.0
+    ann_is_horizontal = w > h * 1.2  # annotation text is wider than tall
+    ann_is_vertical   = h > w * 1.2
+
+    if element_type == "line_horizontal" and ann_is_vertical:
+        direction_penalty = 30.0  # vertical text near horizontal line = bad
+    elif element_type == "line_vertical" and ann_is_horizontal:
+        direction_penalty = 30.0  # horizontal text near vertical line = bad
+    elif element_type == "line_horizontal" and ann_is_horizontal:
+        direction_penalty = 0.0   # horizontal text near horizontal line = good
+    elif element_type == "line_vertical" and ann_is_vertical:
+        direction_penalty = 0.0   # vertical text near vertical line = good
+
+    # Overlap penalty (for lines only)
+    overlap_penalty = 0.0
+    if element_type in ("line_horizontal", "line_vertical"):
+        x1, y1, x2, y2 = element_data[0], element_data[1], element_data[2], element_data[3]
+        if element_type == "line_horizontal":
+            # Check x-range overlap
+            line_x_min = min(x1, x2)
+            line_x_max = max(x1, x2)
+            ann_x_min  = x
+            ann_x_max  = x + w
+            overlap = min(line_x_max, ann_x_max) - max(line_x_min, ann_x_min)
+            if overlap < 0:
+                overlap_penalty = min(abs(overlap), 50.0)  # gap penalty, capped
+        else:
+            # Check y-range overlap
+            line_y_min = min(y1, y2)
+            line_y_max = max(y1, y2)
+            ann_y_min  = y
+            ann_y_max  = y + h
+            overlap = min(line_y_max, ann_y_max) - max(line_y_min, ann_y_min)
+            if overlap < 0:
+                overlap_penalty = min(abs(overlap), 50.0)
+
+    # Weighted score
+    score = 0.5 * dist + 0.3 * direction_penalty + 0.2 * overlap_penalty
+    return score
+
+
+# ============================================================
+# Nearest-element finder functions (with weighted scoring)
+# ============================================================
+
+def _find_nearest_line(cx, cy, h_lines, v_lines, max_distance, ann_box=None):
     """
     Find the nearest horizontal or vertical line to point (cx, cy).
+    Uses weighted scoring when ann_box is provided.
 
     Returns:
         (element_data, distance, element_type) or None if nothing within max_distance.
     """
-    best_dist = max_distance + 1.0
-    best_data = None
-    best_type = None
+    best_score = max_distance + 100.0
+    best_dist  = max_distance + 1.0
+    best_data  = None
+    best_type  = None
 
     for line in h_lines:
         if len(line) < 4:
             continue
         x1, y1, x2, y2 = line[0], line[1], line[2], line[3]
         d = distance_point_to_segment(cx, cy, x1, y1, x2, y2)
-        if d < best_dist:
-            best_dist = d
-            best_data = [int(x1), int(y1), int(x2), int(y2)]
-            best_type = "line_horizontal"
+        if d > max_distance:
+            continue
+
+        if ann_box is not None:
+            score = _compute_association_score(cx, cy, ann_box,
+                                               [int(x1), int(y1), int(x2), int(y2)],
+                                               "line_horizontal")
+        else:
+            score = d
+
+        if score < best_score:
+            best_score = score
+            best_dist  = d
+            best_data  = [int(x1), int(y1), int(x2), int(y2)]
+            best_type  = "line_horizontal"
 
     for line in v_lines:
         if len(line) < 4:
             continue
         x1, y1, x2, y2 = line[0], line[1], line[2], line[3]
         d = distance_point_to_segment(cx, cy, x1, y1, x2, y2)
-        if d < best_dist:
-            best_dist = d
-            best_data = [int(x1), int(y1), int(x2), int(y2)]
-            best_type = "line_vertical"
+        if d > max_distance:
+            continue
+
+        if ann_box is not None:
+            score = _compute_association_score(cx, cy, ann_box,
+                                               [int(x1), int(y1), int(x2), int(y2)],
+                                               "line_vertical")
+        else:
+            score = d
+
+        if score < best_score:
+            best_score = score
+            best_dist  = d
+            best_data  = [int(x1), int(y1), int(x2), int(y2)]
+            best_type  = "line_vertical"
 
     if best_data is None:
         return None
@@ -447,7 +555,7 @@ def _associate_annotation(annotation, elements, category, max_distance):
         if category == 1:
             result = _find_extension_line_target(cx, cy, h_lines, v_lines, contours, max_distance)
         else:
-            result = _find_nearest_line(cx, cy, h_lines, v_lines, max_distance)
+            result = _find_nearest_line(cx, cy, h_lines, v_lines, max_distance, ann_box=box)
         if result is None:
             result = _find_nearest_contour(cx, cy, contours, max_distance)
 
