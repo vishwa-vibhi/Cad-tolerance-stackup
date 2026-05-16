@@ -699,13 +699,13 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
         return []
 
     BOM_TYPES = {'balloon_number', 'part_name', 'material_code', 'material_name', 'quantity'}
-    Y_TOLERANCE = 14  # pixels — slightly wider than before for better row grouping
+    Y_TOLERANCE = 16  # pixels — row grouping tolerance
 
     # Detect BOM region and column layout
     bom_region = _detect_bom_region(classified_entries)
     col_ranges = _detect_bom_columns(classified_entries, bom_region)
 
-    # Filter to BOM-relevant entries with valid boxes
+    # ── Filter to BOM-relevant entries inside the BOM region ─────────────
     relevant = []
     for entry in classified_entries:
         if entry.get("type") not in BOM_TYPES:
@@ -713,28 +713,30 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
         box = _get_box_safe(entry)
         if box is None:
             continue
-        # If we have a BOM region, only include entries within it (with margin)
         if bom_region is not None:
             bx_min, by_min, bx_max, by_max = bom_region
             cx = box[0] + box[2] / 2.0
             cy = box[1] + box[3] / 2.0
-            margin = 30
-            if not (bx_min - margin <= cx <= bx_max + margin and
-                    by_min - margin <= cy <= by_max + margin):
+            if not (bx_min - 10 <= cx <= bx_max + 10 and
+                    by_min - 10 <= cy <= by_max + 10):
                 continue
         relevant.append((entry, box))
 
     if not relevant:
         return []
 
-    # Compute y-centroid and sort top-to-bottom
+    # ── Sort top-to-bottom, then left-to-right ────────────────────────────
     def y_center(item):
         _, box = item
         return box[1] + box[3] / 2.0
 
+    def x_center(item):
+        _, box = item
+        return box[0] + box[2] / 2.0
+
     relevant.sort(key=y_center)
 
-    # Group into rows by y-centroid proximity
+    # ── Group into rows by y-centroid proximity ───────────────────────────
     rows = []
     current_row = [relevant[0]]
     current_y = y_center(relevant[0])
@@ -748,68 +750,118 @@ def reconstruct_bom_rows(classified_entries: list, category: int) -> list:
             current_y = y_center(item)
     rows.append(current_row)
 
-    # Assign roles within each row
+    # ── Assign roles within each row ──────────────────────────────────────
     bom_rows = []
     for row_items in rows:
-        row_items.sort(key=lambda item: item[1][0])  # sort by x
+        row_items.sort(key=x_center)  # left → right
 
-        part_no = None
+        part_no       = None
         part_name_val = None
-        material = None
-        qty = None
+        material      = None
+        qty           = None
 
         for entry, box in row_items:
-            t = entry.get("type")
+            t      = entry.get("type")
             parsed = entry.get("parsed", {})
-            cx = box[0] + box[2] / 2.0
+            cx     = box[0] + box[2] / 2.0
 
-            # If column ranges detected, use them for role assignment
             if col_ranges is not None:
-                pno_range  = col_ranges['part_no']
-                pname_range = col_ranges['part_name']
-                mat_range  = col_ranges['material']
-                qty_range  = col_ranges['qty']
+                pno_range   = col_ranges.get('part_no',   (0, 0))
+                pname_range = col_ranges.get('part_name', (0, 0))
+                mat_range   = col_ranges.get('material',  (0, 0))
+                qty_range   = col_ranges.get('qty',       (0, 0))
 
-                if pno_range[0] <= cx <= pno_range[1]:
-                    # Part no column: prefer balloon_number, fallback to any number
+                in_pno   = pno_range[0]   <= cx <= pno_range[1]
+                in_pname = pname_range[0] <= cx <= pname_range[1]
+                in_mat   = mat_range[0]   <= cx <= mat_range[1]
+                in_qty   = qty_range[0]   <= cx <= qty_range[1]
+
+                if in_pno:
                     if t == 'balloon_number' and part_no is None:
                         part_no = parsed.get("number")
                     elif t == 'quantity' and part_no is None:
                         part_no = parsed.get("qty")
-                elif pname_range[0] <= cx <= pname_range[1]:
+                elif in_pname:
                     if t == 'part_name' and part_name_val is None:
-                        part_name_val = parsed.get("name")
-                elif mat_range[0] <= cx <= mat_range[1]:
-                    if t in ('material_code', 'material_name') and material is None:
-                        material = parsed.get("code") or parsed.get("name")
-                elif qty_range[0] <= cx <= qty_range[1]:
+                        part_name_val = parsed.get("name", entry.get("text", "")).strip()
+                        # Clean OCR artefacts from part names
+                        part_name_val = part_name_val.rstrip(':').strip()
+                elif in_mat:
+                    if t == 'material_code' and material is None:
+                        material = parsed.get("code")
+                    elif t == 'material_name' and material is None:
+                        raw = parsed.get("name", entry.get("text", ""))
+                        # Clean OCR artefacts: "Bras:" → "Brass", "Glanc" → "Gland"
+                        material = _clean_ocr_name(raw)
+                elif in_qty:
                     if t == 'quantity' and qty is None:
                         qty = parsed.get("qty")
                     elif t == 'balloon_number' and qty is None:
                         qty = parsed.get("number")
+                else:
+                    # Entry is in BOM region but doesn't fit any column —
+                    # assign by type as fallback
+                    if t == 'part_name' and part_name_val is None:
+                        part_name_val = parsed.get("name", entry.get("text", "")).rstrip(':').strip()
+                    elif t in ('material_code', 'material_name') and material is None:
+                        raw = parsed.get("code") or parsed.get("name") or entry.get("text", "")
+                        material = _clean_ocr_name(raw)
+                    elif t == 'quantity' and qty is None:
+                        qty = parsed.get("qty")
+                    elif t == 'balloon_number' and part_no is None:
+                        part_no = parsed.get("number")
             else:
-                # Fallback: type-based assignment (original logic)
-                if t == "balloon_number" and part_no is None:
+                # No column ranges — pure type-based assignment
+                if t == 'balloon_number' and part_no is None:
                     part_no = parsed.get("number")
-                elif t == "part_name" and part_name_val is None:
-                    part_name_val = parsed.get("name")
-                elif t == "material_code" and material is None:
+                elif t == 'part_name' and part_name_val is None:
+                    part_name_val = parsed.get("name", entry.get("text", "")).rstrip(':').strip()
+                elif t == 'material_code' and material is None:
                     material = parsed.get("code")
-                elif t == "material_name" and material is None:
-                    material = parsed.get("name")
-                elif t == "quantity" and qty is None:
+                elif t == 'material_name' and material is None:
+                    material = _clean_ocr_name(parsed.get("name", entry.get("text", "")))
+                elif t == 'quantity' and qty is None:
                     qty = parsed.get("qty")
 
-        # Only include rows that have at least one non-null field
         if any(v is not None for v in [part_no, part_name_val, material, qty]):
             bom_rows.append({
-                "part_no": part_no,
+                "part_no":   part_no,
                 "part_name": part_name_val,
-                "material": material,
-                "qty": qty,
+                "material":  material,
+                "qty":       qty,
             })
 
     return bom_rows
+
+
+def _clean_ocr_name(text):
+    """
+    Clean common OCR artefacts from part/material names.
+    e.g. 'Bras:' → 'Brass', 'Glanc' → 'Gland', 'Nu:' → 'Nut'
+    """
+    if not text:
+        return text
+    t = text.strip().rstrip(':').strip()
+    # Common OCR misreads in Indian standard drawing part names
+    corrections = {
+        'BRAS':    'BRASS',
+        'GLANC':   'GLAND',
+        'NU':      'NUT',
+        'SPINDL':  'SPINDLE',
+        'BONNIT':  'BONNET',
+        'SLEVE':   'SLEEVE',
+        'HANDWHEL':'HANDWHEEL',
+        'VLAVE':   'VALVE',
+        'VLVE':    'VALVE',
+        'SPRIG':   'SPRING',
+        'PISTON':  'PISTON',
+        'CONROD':  'CONNECTING ROD',
+    }
+    upper = t.upper()
+    for wrong, right in corrections.items():
+        if upper == wrong or upper.startswith(wrong):
+            return right.title()
+    return t
 
 
 # ============================================================

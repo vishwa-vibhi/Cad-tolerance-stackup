@@ -157,18 +157,23 @@ def _attribute_cat1(classified, filename):
 def _attribute_cat2(classified, bom_rows, max_distance):
     """
     Category 2: link each dimension to the nearest balloon, then look up BOM.
-    Falls back to nearest part_name entry if balloon has no BOM match.
+    Multi-strategy fallback chain for robust attribution.
     """
     bom_lookup = _build_bom_lookup(bom_rows)
 
-    # Secondary lookup: part_name text → part_no (from BOM rows)
-    name_to_partno = {}
+    # Build direct text → BOM row lookup for when balloon lookup fails
+    # Key: normalised part_name text → bom row
+    text_to_bom = {}
     for row in bom_rows:
-        if row.get("part_name") and row.get("part_no") is not None:
-            name_to_partno[row["part_name"].upper()] = row["part_no"]
+        if row.get("part_name"):
+            key = row["part_name"].upper().strip()
+            if key not in text_to_bom:
+                text_to_bom[key] = row
 
-    balloon_entries = [e for e in classified if e.get("type") == "balloon_number"]
-    part_name_entries = [e for e in classified if e.get("type") == "part_name"]
+    balloon_entries    = [e for e in classified if e.get("type") == "balloon_number"]
+    part_name_entries  = [e for e in classified if e.get("type") == "part_name"]
+    material_entries   = [e for e in classified
+                          if e.get("type") in ("material_code", "material_name")]
 
     attributions = []
     for entry in classified:
@@ -178,15 +183,15 @@ def _attribute_cat2(classified, bom_rows, max_distance):
         if ann_type in DIMENSION_TYPES:
             ann_center = _center(entry.get("box"))
             if ann_center is not None:
-                # Strategy 1: nearest balloon → BOM lookup
+
+                # ── Strategy 1: nearest balloon → BOM lookup ─────────────
                 nearest_balloon, balloon_dist = _find_nearest_balloon(
                     ann_center, balloon_entries, max_distance
                 )
-
                 if nearest_balloon is not None:
-                    part_no = nearest_balloon.get("parsed", {}).get("number")
+                    part_no   = nearest_balloon.get("parsed", {}).get("number")
                     bom_entry = bom_lookup.get(part_no, {})
-                    has_name = bom_entry.get("part_name") is not None
+                    has_name  = bool(bom_entry.get("part_name"))
 
                     if balloon_dist < 50 and has_name:
                         confidence = "high"
@@ -198,64 +203,74 @@ def _attribute_cat2(classified, bom_rows, max_distance):
                         confidence = "balloon_only"
 
                     attribution = {
-                        "part_no":    part_no,
-                        "part_name":  bom_entry.get("part_name"),
-                        "material":   bom_entry.get("material"),
-                        "confidence": confidence,
-                        "method":     "nearest_balloon_bom",
+                        "part_no":             part_no,
+                        "part_name":           bom_entry.get("part_name"),
+                        "material":            bom_entry.get("material"),
+                        "qty":                 bom_entry.get("qty"),
+                        "confidence":          confidence,
+                        "method":              "nearest_balloon_bom",
                         "balloon_distance_px": round(balloon_dist, 1),
                     }
 
-                # Strategy 2: balloon found but no part_name → try nearest part_name entry
-                if attribution is not None and attribution.get("part_name") is None:
+                # ── Strategy 2: balloon found but BOM has no name ─────────
+                # Try nearest part_name OCR entry and match to BOM
+                if attribution is not None and not attribution.get("part_name"):
                     nearest_pname, pname_dist = _find_nearest_balloon(
                         ann_center, part_name_entries, max_distance * 2
                     )
                     if nearest_pname is not None:
-                        pname_text = nearest_pname.get("parsed", {}).get("name", "")
-                        pno_from_name = name_to_partno.get(pname_text.upper())
-                        bom_entry2 = bom_lookup.get(pno_from_name, {}) if pno_from_name else {}
-                        attribution = {
-                            "part_no":    pno_from_name or attribution.get("part_no"),
-                            "part_name":  pname_text,
-                            "material":   bom_entry2.get("material") or attribution.get("material"),
+                        raw_name  = nearest_pname.get("text", "").rstrip(":").strip()
+                        bom_match = text_to_bom.get(raw_name.upper(), {})
+                        attribution.update({
+                            "part_name":  raw_name or attribution.get("part_name"),
+                            "material":   bom_match.get("material") or attribution.get("material"),
+                            "qty":        bom_match.get("qty") or attribution.get("qty"),
                             "confidence": "medium" if pname_dist < 100 else "low",
-                            "method":     "nearest_part_name",
-                            "balloon_distance_px": round(pname_dist, 1),
-                        }
+                            "method":     "balloon_bom_with_name_fallback",
+                        })
 
-                # Strategy 3: no balloon at all → try nearest part_name directly
+                # ── Strategy 3: no balloon → nearest part_name entry ──────
                 if attribution is None:
                     nearest_pname, pname_dist = _find_nearest_balloon(
                         ann_center, part_name_entries, max_distance * 2
                     )
                     if nearest_pname is not None:
-                        pname_text = nearest_pname.get("parsed", {}).get("name", "")
-                        pno_from_name = name_to_partno.get(pname_text.upper())
-                        bom_entry2 = bom_lookup.get(pno_from_name, {}) if pno_from_name else {}
+                        raw_name  = nearest_pname.get("text", "").rstrip(":").strip()
+                        bom_match = text_to_bom.get(raw_name.upper(), {})
+                        # Also look for nearest material entry
+                        nearest_mat, _ = _find_nearest_balloon(
+                            ann_center, material_entries, max_distance * 2
+                        )
+                        mat_text = None
+                        if nearest_mat:
+                            mat_text = (nearest_mat.get("parsed", {}).get("code") or
+                                        nearest_mat.get("parsed", {}).get("name") or
+                                        nearest_mat.get("text", ""))
                         attribution = {
-                            "part_no":    pno_from_name,
-                            "part_name":  pname_text,
-                            "material":   bom_entry2.get("material"),
-                            "confidence": "low",
-                            "method":     "nearest_part_name_only",
+                            "part_no":             bom_match.get("part_no"),
+                            "part_name":           raw_name,
+                            "material":            bom_match.get("material") or mat_text,
+                            "qty":                 bom_match.get("qty"),
+                            "confidence":          "medium" if pname_dist < 100 else "low",
+                            "method":              "nearest_part_name",
                             "balloon_distance_px": round(pname_dist, 1),
                         }
                     else:
                         attribution = {
-                            "part_no":    None,
-                            "part_name":  None,
-                            "material":   None,
-                            "confidence": "none",
-                            "method":     "no_balloon_found",
+                            "part_no":             None,
+                            "part_name":           None,
+                            "material":            None,
+                            "qty":                 None,
+                            "confidence":          "none",
+                            "method":              "no_match",
                             "balloon_distance_px": None,
                         }
 
         attributions.append({
-            "annotation_id":   entry.get("id"),
-            "annotation_text": entry.get("text", ""),
-            "annotation_type": ann_type,
-            "annotation_box":  entry.get("box", []),
+            "annotation_id":    entry.get("id"),
+            "annotation_text":  entry.get("text", ""),
+            "annotation_type":  ann_type,
+            "annotation_box":   entry.get("box", []),
             "part_attribution": attribution,
         })
 
@@ -264,9 +279,13 @@ def _attribute_cat2(classified, bom_rows, max_distance):
 
 def _attribute_cat3(classified, max_distance):
     """
-    Category 3: assembly views, no BOM. Link dimensions to nearest balloon only.
+    Category 3: assembly views, no BOM.
+    Link dimensions to nearest balloon. Also try nearest part_name OCR entry.
     """
-    balloon_entries = [e for e in classified if e.get("type") == "balloon_number"]
+    balloon_entries   = [e for e in classified if e.get("type") == "balloon_number"]
+    part_name_entries = [e for e in classified if e.get("type") == "part_name"]
+    material_entries  = [e for e in classified
+                         if e.get("type") in ("material_code", "material_name")]
 
     attributions = []
     for entry in classified:
@@ -276,25 +295,59 @@ def _attribute_cat3(classified, max_distance):
         if ann_type in DIMENSION_TYPES:
             ann_center = _center(entry.get("box"))
             if ann_center is not None:
+
+                # Strategy 1: nearest balloon
                 nearest_balloon, balloon_dist = _find_nearest_balloon(
                     ann_center, balloon_entries, max_distance
                 )
                 if nearest_balloon is not None:
                     part_no = nearest_balloon.get("parsed", {}).get("number")
                     attribution = {
-                        "part_no":    part_no,
-                        "part_name":  None,   # no BOM in Cat 3
-                        "material":   None,
-                        "confidence": "balloon_only",
-                        "method":     "nearest_balloon_no_bom",
+                        "part_no":             part_no,
+                        "part_name":           f"Part {part_no}" if part_no else None,
+                        "material":            None,
+                        "qty":                 None,
+                        "confidence":          "balloon_only",
+                        "method":              "nearest_balloon_no_bom",
                         "balloon_distance_px": round(balloon_dist, 1),
                     }
 
+                # Strategy 2: also try nearest part_name OCR text
+                nearest_pname, pname_dist = _find_nearest_balloon(
+                    ann_center, part_name_entries, max_distance * 2
+                )
+                if nearest_pname is not None:
+                    raw_name = nearest_pname.get("text", "").rstrip(":").strip()
+                    nearest_mat, _ = _find_nearest_balloon(
+                        ann_center, material_entries, max_distance * 2
+                    )
+                    mat_text = None
+                    if nearest_mat:
+                        mat_text = (nearest_mat.get("parsed", {}).get("code") or
+                                    nearest_mat.get("parsed", {}).get("name") or
+                                    nearest_mat.get("text", ""))
+                    if attribution is not None:
+                        # Enrich existing balloon attribution with name
+                        attribution["part_name"] = raw_name
+                        attribution["material"]  = mat_text
+                        attribution["confidence"] = "medium" if pname_dist < 100 else "low"
+                        attribution["method"]    = "balloon_with_part_name"
+                    else:
+                        attribution = {
+                            "part_no":             None,
+                            "part_name":           raw_name,
+                            "material":            mat_text,
+                            "qty":                 None,
+                            "confidence":          "low",
+                            "method":              "nearest_part_name_only",
+                            "balloon_distance_px": round(pname_dist, 1),
+                        }
+
         attributions.append({
-            "annotation_id":   entry.get("id"),
-            "annotation_text": entry.get("text", ""),
-            "annotation_type": ann_type,
-            "annotation_box":  entry.get("box", []),
+            "annotation_id":    entry.get("id"),
+            "annotation_text":  entry.get("text", ""),
+            "annotation_type":  ann_type,
+            "annotation_box":   entry.get("box", []),
             "part_attribution": attribution,
         })
 
@@ -318,17 +371,27 @@ def _build_summary(attributions, bom_lookup):
             continue
 
         part_no   = attr.get("part_no")
-        part_name = attr.get("part_name") or f"Part {part_no}" if part_no else "Unknown"
+        part_name = attr.get("part_name") or (f"Part {part_no}" if part_no else "Unknown")
         material  = attr.get("material")
-        key = part_no if part_no is not None else "unattributed"
+        qty       = attr.get("qty")
+        key       = part_no if part_no is not None else f"unnamed_{part_name}"
 
         if key not in per_part:
             per_part[key] = {
-                "part_no":    part_no,
-                "part_name":  part_name,
-                "material":   material,
+                "part_no":   part_no,
+                "part_name": part_name,
+                "material":  material,
+                "qty":       qty,
                 "dimensions": [],
             }
+        else:
+            # Update with better data if available
+            if per_part[key]["part_name"] is None and part_name:
+                per_part[key]["part_name"] = part_name
+            if per_part[key]["material"] is None and material:
+                per_part[key]["material"] = material
+            if per_part[key]["qty"] is None and qty:
+                per_part[key]["qty"] = qty
 
         per_part[key]["dimensions"].append({
             "text":       a.get("annotation_text", ""),
