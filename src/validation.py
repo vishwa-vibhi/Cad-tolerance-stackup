@@ -386,6 +386,15 @@ def classify(text: str, category: int) -> str:
         return "dimension_with_note"
     if re.match(r'^\d+\s*(GROOVE|DEEP|KEY)', t, re.IGNORECASE):
         return "dimension_with_note"
+    # SQ THD (square thread), ACME THD, BSW THD etc.
+    if re.search(r'THD|THREAD', t, re.IGNORECASE):
+        return "thread_spec"
+    # Standalone Ø symbol (incomplete OCR — just the diameter symbol)
+    if t == 'Ø' or t == 'O/' or t == 'Ã˜':
+        return "diameter_callout"
+    # TURNS, TEETH, SPIRAL — gear/spring specs
+    if re.search(r'TURNS|TEETH|SPIRAL|COILS', t, re.IGNORECASE):
+        return "dimension_with_note"
 
     # P4.6: angle values — NNN° patterns
     if re.match(r'^\d{1,3}°$', t):
