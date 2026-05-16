@@ -35,6 +35,15 @@ from semantic_labeller import label_file
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB max upload
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable caching
+
+@app.after_request
+def add_no_cache_headers(response):
+    """Prevent browser from caching HTML/JS."""
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_DIR  = os.path.join(BASE_DIR, 'app', 'uploads')
