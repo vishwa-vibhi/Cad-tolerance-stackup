@@ -341,19 +341,67 @@ def read_full_image(image_path, output_dir="results", min_confidence=0.5,
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(structured, f, indent=2, ensure_ascii=False)
 
-    # ── Visualization ─────────────────────────────────────────────────────
+    # ── Visualization — colored semi-transparent filled boxes by confidence ──
     vis = original.copy()
+    overlay = vis.copy()
+
     for item in structured:
         x, y, w_box, h_box = item["box"]
-        cv2.rectangle(vis, (x, y), (x + w_box, y + h_box), (0, 255, 0), 2)
-        cv2.putText(vis, item["text"][:20], (x, max(y - 3, 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-    # Highlight BOM region if detected
+        conf = item["confidence"]
+
+        # Color by confidence: green=high, yellow=medium, red=low (BGR)
+        if conf > 0.9:
+            color = (0, 200, 60)      # green
+        elif conf >= 0.7:
+            color = (0, 200, 220)     # yellow
+        else:
+            color = (50, 80, 220)     # red/orange
+
+        # Filled semi-transparent rectangle
+        cv2.rectangle(overlay, (x, y), (x + w_box, y + h_box), color, -1)
+        # Solid border
+        cv2.rectangle(vis, (x, y), (x + w_box, y + h_box), color, 1)
+
+    # Blend overlay (30% opacity fill)
+    cv2.addWeighted(overlay, 0.25, vis, 0.75, 0, vis)
+
+    # Draw text labels on top of blended image
+    for item in structured:
+        x, y, w_box, h_box = item["box"]
+        conf = item["confidence"]
+        if conf > 0.9:
+            color = (0, 200, 60)
+        elif conf >= 0.7:
+            color = (0, 200, 220)
+        else:
+            color = (50, 80, 220)
+
+        label = item["text"][:18]
+        # Small dark background behind text for readability
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
+        ty = max(y - 2, th + 2)
+        cv2.rectangle(vis, (x, ty - th - 2), (x + tw + 2, ty + 1), (0, 0, 0), -1)
+        cv2.putText(vis, label, (x + 1, ty - 1),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
+
+    # Highlight BOM region with orange border
     if bom_bbox is not None:
         bx, by, bw_r, bh_r = bom_bbox
-        cv2.rectangle(vis, (bx, by), (bx + bw_r, by + bh_r), (255, 165, 0), 2)
-        cv2.putText(vis, "BOM", (bx, by - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 2)
+        cv2.rectangle(vis, (bx, by), (bx + bw_r, by + bh_r), (0, 165, 255), 2)
+        cv2.putText(vis, "BOM TABLE", (bx, max(by - 5, 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 165, 255), 1)
+
+    # Legend (bottom-left)
+    legend = [("High conf >0.9", (0, 200, 60)),
+              ("Med conf 0.7-0.9", (0, 200, 220)),
+              ("Low conf <0.7", (50, 80, 220))]
+    lx, ly = 6, vis.shape[0] - 10
+    for lbl, col in legend:
+        cv2.rectangle(vis, (lx, ly - 10), (lx + 12, ly), col, -1)
+        cv2.putText(vis, lbl, (lx + 15, ly - 1),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (220, 220, 220), 1)
+        lx += 120
+
     vis_path = os.path.join(output_dir, f"{filename}_fullocr.png")
     cv2.imwrite(vis_path, vis)
 
