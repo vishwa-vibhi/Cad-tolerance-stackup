@@ -127,21 +127,23 @@ select { background: #1e2535; color: #c0c8d8; border: 1px solid #2d3448; border-
 
   <!-- Upload Section -->
   <div id="upload-section">
+    <!-- Category Selection (OUTSIDE upload zone) -->
+    <div style="margin-bottom:14px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+      <span style="color:#8892a4; font-size:0.82rem; align-self:center; margin-right:8px;">Drawing type:</span>
+      <button class="btn btn-secondary cat-btn active" data-cat="auto" onclick="selectCat(this,'auto')">Auto-detect</button>
+      <button class="btn btn-secondary cat-btn" data-cat="cad1" onclick="selectCat(this,'cad1')">Cat 1 — Part</button>
+      <button class="btn btn-secondary cat-btn" data-cat="cad2" onclick="selectCat(this,'cad2')">Cat 2 — Assembly</button>
+      <button class="btn btn-secondary cat-btn" data-cat="cad3" onclick="selectCat(this,'cad3')">Cat 3 — View</button>
+    </div>
+    <input type="hidden" id="cat-select" value="auto">
+
     <div class="upload-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
       <div class="icon">📐</div>
       <h2>Upload Engineering Drawing</h2>
       <p>Drag &amp; drop a PNG/JPG, or click to browse</p>
-      <p style="margin-top:6px; font-size:0.75rem; color:#4b5563;">Part drawings (cad1) · Assembly drawings (cad2) · Assembly views (cad3)</p>
       <input type="file" id="file-input" accept=".png,.jpg,.jpeg" onchange="handleFileSelect(this)">
-      <div style="margin-top:18px; display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap;">
-        <input type="hidden" id="cat-select" value="auto">
+      <div style="margin-top:18px;">
         <button class="btn btn-primary" onclick="event.stopPropagation(); document.getElementById('file-input').click()">Choose File</button>
-      </div>
-      <div style="margin-top:14px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;" onclick="event.stopPropagation()">
-        <button class="btn btn-secondary cat-btn active" data-cat="auto" onclick="selectCat(this,'auto')">Auto-detect</button>
-        <button class="btn btn-secondary cat-btn" data-cat="cad1" onclick="selectCat(this,'cad1')">Cat 1 — Part</button>
-        <button class="btn btn-secondary cat-btn" data-cat="cad2" onclick="selectCat(this,'cad2')">Cat 2 — Assembly</button>
-        <button class="btn btn-secondary cat-btn" data-cat="cad3" onclick="selectCat(this,'cad3')">Cat 3 — View</button>
       </div>
     </div>
     <div id="progress-section" class="hidden" style="margin-top:18px;">
