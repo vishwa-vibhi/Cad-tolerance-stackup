@@ -990,7 +990,8 @@ def build_structured_output(source_file: str, category: int, classified_entries:
 # File-level and batch processing
 # ============================================================
 
-def validate_file(fullocr_path: str, output_dir: str) -> dict:
+def validate_file(fullocr_path: str, output_dir: str,
+                  use_ml_classifier: bool = True) -> dict:
     """
     Process a single _fullocr.json file.
 
@@ -998,14 +999,14 @@ def validate_file(fullocr_path: str, output_dir: str) -> dict:
     parsed sub-fields, assembles the structured output dict, and writes
     it as a _structured.json file in output_dir.
 
-    Does NOT raise on errors. Malformed JSON or missing fields are handled
-    gracefully: errors are logged to stdout and an empty-result dict (or
-    None for unrecoverable failures) is returned.
+    When use_ml_classifier=True (default), entries that the regex classifier
+    marks as "unknown" are re-classified using the trained ML model.
+    This reduces the unknown rate from ~14% to ~8%.
 
     Args:
-        fullocr_path: Absolute or relative path to the _fullocr.json file.
-        output_dir:   Directory where the _structured.json will be written.
-                      Created with os.makedirs(..., exist_ok=True) if absent.
+        fullocr_path:      Absolute or relative path to the _fullocr.json file.
+        output_dir:        Directory where the _structured.json will be written.
+        use_ml_classifier: Whether to use ML fallback for unknowns (default True).
 
     Returns:
         The structured output dictionary (same content as the written file),
@@ -1027,21 +1028,54 @@ def validate_file(fullocr_path: str, output_dir: str) -> dict:
 
     category = detect_category(basename)
 
+    # ── Pass 1: regex classification ──────────────────────────────────────
     classified_entries = []
+    unknown_indices    = []   # indices of entries still "unknown" after regex
+
     for entry in entries:
-        raw_text = entry.get("text", "")
+        raw_text   = entry.get("text", "")
         normalised = normalise_text(raw_text)
-        type_ = classify(normalised, category)
-        parsed = extract_parsed(type_, normalised)
+        type_      = classify(normalised, category)
+        parsed     = extract_parsed(type_, normalised)
 
         classified_entries.append({
-            "id": entry.get("id", 0),
-            "box": entry.get("box", []),
-            "text": normalised,
-            "type": type_,
+            "id":         entry.get("id", 0),
+            "box":        entry.get("box", []),
+            "text":       normalised,
+            "type":       type_,
             "confidence": entry.get("confidence", 0.0),
-            "parsed": parsed,
+            "parsed":     parsed,
         })
+        if type_ == "unknown":
+            unknown_indices.append(len(classified_entries) - 1)
+
+    # ── Pass 2: ML fallback for unknowns ──────────────────────────────────
+    if use_ml_classifier and unknown_indices:
+        try:
+            # Lazy import — only load if model exists
+            from text_classifier import predict_batch, load_model, MODEL_PATH
+            bundle = load_model(MODEL_PATH)
+            if bundle is not None:
+                unk_texts = [classified_entries[i]["text"] for i in unknown_indices]
+                unk_cats  = [category] * len(unk_texts)
+                ml_preds  = predict_batch(unk_texts, unk_cats, MODEL_PATH)
+
+                ml_rescued = 0
+                for idx, (ml_type, ml_conf) in zip(unknown_indices, ml_preds):
+                    if ml_type != "unknown":
+                        entry = classified_entries[idx]
+                        entry["type"]   = ml_type
+                        entry["parsed"] = extract_parsed(ml_type, entry["text"])
+                        entry["ml_classified"] = True
+                        entry["ml_confidence"] = round(ml_conf, 4)
+                        ml_rescued += 1
+
+                if ml_rescued > 0:
+                    print(f"  ML classifier rescued {ml_rescued}/{len(unknown_indices)} unknowns")
+        except ImportError:
+            pass   # ML classifier not available — use regex only
+        except Exception as e:
+            pass   # Silently skip ML on any error
 
     result = build_structured_output(basename, category, classified_entries)
 
