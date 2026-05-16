@@ -109,12 +109,12 @@ def main():
     out = "results/confusion_matrix_report.json"
     json.dump({
         "per_class": report,
-        "confusion_matrix": cm.tolist(),
+        "confusion_matrix": [[int(x) for x in row] for row in cm],
         "class_names": TRAINABLE_TYPES,
-        "top_confusions": [(c, t, p) for c, t, p in confusions[:20]],
-        "accuracy": acc,
-        "f1_macro": f1m,
-        "f1_weighted": f1w,
+        "top_confusions": [(int(c), t, p) for c, t, p in confusions[:20]],
+        "accuracy": float(acc),
+        "f1_macro": float(f1m),
+        "f1_weighted": float(f1w),
     }, open(out, 'w'), indent=2)
     print(f"\n  Saved: {out}")
 
