@@ -27,6 +27,7 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f1117; color: #
 .btn-primary:hover { background: #1d4ed8; }
 .btn-secondary { background: #1e2535; color: #c0c8d8; border: 1px solid #2d3448; }
 .btn-secondary:hover { background: #252b3b; }
+.cat-btn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
 
 .progress-bar { height: 4px; background: #1e2535; border-radius: 2px; overflow: hidden; margin: 14px 0; }
 .progress-fill { height: 100%; background: linear-gradient(90deg, #2563eb, #7c3aed); border-radius: 2px; transition: width 0.3s; }
@@ -133,13 +134,14 @@ select { background: #1e2535; color: #c0c8d8; border: 1px solid #2d3448; border-
       <p style="margin-top:6px; font-size:0.75rem; color:#4b5563;">Part drawings (cad1) · Assembly drawings (cad2) · Assembly views (cad3)</p>
       <input type="file" id="file-input" accept=".png,.jpg,.jpeg" onchange="handleFileSelect(this)">
       <div style="margin-top:18px; display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap;">
-        <select id="cat-select" onclick="event.stopPropagation()">
-          <option value="auto">Auto-detect category</option>
-          <option value="cad1">cad1 — Part drawing</option>
-          <option value="cad2">cad2 — Assembly drawing</option>
-          <option value="cad3">cad3 — Assembly view</option>
-        </select>
+        <input type="hidden" id="cat-select" value="auto">
         <button class="btn btn-primary" onclick="event.stopPropagation(); document.getElementById('file-input').click()">Choose File</button>
+      </div>
+      <div style="margin-top:14px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;" onclick="event.stopPropagation()">
+        <button class="btn btn-secondary cat-btn active" data-cat="auto" onclick="selectCat(this,'auto')">Auto-detect</button>
+        <button class="btn btn-secondary cat-btn" data-cat="cad1" onclick="selectCat(this,'cad1')">Cat 1 — Part</button>
+        <button class="btn btn-secondary cat-btn" data-cat="cad2" onclick="selectCat(this,'cad2')">Cat 2 — Assembly</button>
+        <button class="btn btn-secondary cat-btn" data-cat="cad3" onclick="selectCat(this,'cad3')">Cat 3 — View</button>
       </div>
     </div>
     <div id="progress-section" class="hidden" style="margin-top:18px;">
@@ -441,6 +443,12 @@ function resetUI() {
 function esc(str) {
   if (!str) return '';
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function selectCat(btn, cat) {
+  document.getElementById('cat-select').value = cat;
+  document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
 }
 </script>
 </body>
