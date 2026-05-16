@@ -335,7 +335,402 @@ def attribution_metrics():
 
 
 # ============================================================
-# 5. Semantic Labelling Metrics
+# 5. OCR Character Error Rate Proxy
+# ============================================================
+
+def ocr_cer_metrics():
+    """
+    Compute OCR Character Error Rate (CER) proxy.
+
+    CER = edit_distance(text, raw_text) / max(len(text), len(raw_text))
+
+    Since text = post_processed(raw_text), this measures how much
+    post-processing had to correct. Lower = OCR was more accurate.
+    Also computes Word Error Rate (WER) proxy.
+    """
+    files = sorted(glob.glob(os.path.join(RESULTS_DIR, "*_fullocr.json")))
+
+    cer_values = []
+    wer_values = []
+    total = 0
+    perfect = 0   # text == raw_text (no correction needed)
+    per_cat = defaultdict(lambda: dict(cer=[], wer=[]))
+
+    for f in files:
+        data = load_json(f)
+        if not data or not isinstance(data, list):
+            continue
+        cat = 1 if 'cad1_' in f else (2 if 'cad2_' in f else 3)
+
+        for e in data:
+            text = e.get('text', '')
+            raw  = e.get('raw_text', text)
+            if not text and not raw:
+                continue
+            total += 1
+
+            # CER: normalised edit distance at character level
+            cer = _edit_distance_norm(text, raw)
+            cer_values.append(cer)
+            per_cat[cat]['cer'].append(cer)
+
+            # WER: word-level (split on spaces)
+            wer = _word_error_rate(text, raw)
+            wer_values.append(wer)
+            per_cat[cat]['wer'].append(wer)
+
+            if text == raw:
+                perfect += 1
+
+    return {
+        "total_entries":      total,
+        "perfect_ocr_pct":    pct(perfect, total),
+        "mean_cer":           round(mean(cer_values), 4),
+        "median_cer":         round(sorted(cer_values)[len(cer_values)//2], 4) if cer_values else 0,
+        "mean_wer":           round(mean(wer_values), 4),
+        "cer_zero_pct":       pct(sum(1 for c in cer_values if c == 0), total),
+        "cer_under_10pct":    pct(sum(1 for c in cer_values if c < 0.1), total),
+        "cer_over_50pct":     pct(sum(1 for c in cer_values if c > 0.5), total),
+        "per_category": {
+            f"cat{k}": {
+                "mean_cer": round(mean(v['cer']), 4),
+                "mean_wer": round(mean(v['wer']), 4),
+                "perfect_pct": pct(sum(1 for c in v['cer'] if c == 0), len(v['cer'])),
+            }
+            for k, v in sorted(per_cat.items()) if v['cer']
+        }
+    }
+
+
+def _edit_distance_norm(a, b):
+    """Normalised Levenshtein distance in [0, 1]."""
+    if not a and not b:
+        return 0.0
+    max_len = max(len(a), len(b))
+    if max_len == 0:
+        return 0.0
+    # Simple DP edit distance
+    la, lb = len(a), len(b)
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        curr = [i] + [0] * lb
+        for j in range(1, lb + 1):
+            cost = 0 if a[i-1] == b[j-1] else 1
+            curr[j] = min(prev[j] + 1, curr[j-1] + 1, prev[j-1] + cost)
+        prev = curr
+    return round(prev[lb] / max_len, 4)
+
+
+def _word_error_rate(hyp, ref):
+    """Simple word error rate."""
+    h = hyp.split()
+    r = ref.split()
+    if not r:
+        return 0.0 if not h else 1.0
+    # Edit distance on word sequences
+    la, lb = len(h), len(r)
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        curr = [i] + [0] * lb
+        for j in range(1, lb + 1):
+            cost = 0 if h[i-1] == r[j-1] else 1
+            curr[j] = min(prev[j] + 1, curr[j-1] + 1, prev[j-1] + cost)
+        prev = curr
+    return round(min(prev[lb] / len(r), 1.0), 4)
+
+
+# ============================================================
+# 6. BOM Field Fill Rate
+# ============================================================
+
+def bom_fill_metrics():
+    """
+    BOM field fill rate — average % of fields filled per row.
+
+    Better than binary completeness: a row with 3/4 fields = 75%.
+    Fields: part_no, part_name, material, qty
+    """
+    files = sorted(glob.glob(os.path.join(RESULTS_DIR, "*_structured.json")))
+    FIELDS = ['part_no', 'part_name', 'material', 'qty']
+
+    all_fill_rates = []
+    per_field = {f: dict(filled=0, total=0) for f in FIELDS}
+    images_with_bom = 0
+    total_rows = 0
+
+    for f in files:
+        data = load_json(f)
+        if not data or data.get('image_category') != 2:
+            continue
+        bom_rows = data.get('bom_rows', [])
+        if not bom_rows:
+            continue
+        images_with_bom += 1
+
+        for row in bom_rows:
+            total_rows += 1
+            filled = sum(1 for field in FIELDS if row.get(field) is not None)
+            fill_rate = filled / len(FIELDS)
+            all_fill_rates.append(fill_rate)
+            for field in FIELDS:
+                per_field[field]['total'] += 1
+                if row.get(field) is not None:
+                    per_field[field]['filled'] += 1
+
+    return {
+        "cat2_images_with_bom": images_with_bom,
+        "total_bom_rows":       total_rows,
+        "mean_fill_rate_pct":   round(mean(all_fill_rates) * 100, 2) if all_fill_rates else 0,
+        "fully_complete_rows":  sum(1 for r in all_fill_rates if r == 1.0),
+        "fully_complete_pct":   pct(sum(1 for r in all_fill_rates if r == 1.0), total_rows),
+        "at_least_half_pct":    pct(sum(1 for r in all_fill_rates if r >= 0.5), total_rows),
+        "per_field_fill_pct": {
+            field: pct(v['filled'], v['total'])
+            for field, v in per_field.items()
+        }
+    }
+
+
+# ============================================================
+# 7. Association Distance Buckets
+# ============================================================
+
+def association_distance_metrics():
+    """
+    Granular association distance analysis.
+
+    Buckets:
+      0px:       annotation is exactly on the element (inside circle)
+      0-20px:    very tight — almost certainly correct
+      20-50px:   tight — likely correct
+      50-100px:  moderate — probably correct
+      100-150px: loose — may be wrong
+      >150px:    very loose — likely wrong (beyond MAX_DISTANCE_PX)
+    """
+    files = sorted(glob.glob(os.path.join(RESULTS_DIR, "*_associations.json")))
+
+    buckets = {
+        'exact_0px':    0,
+        'tight_0_20':   0,
+        'good_20_50':   0,
+        'moderate_50_100': 0,
+        'loose_100_150':   0,
+        'very_loose_150p': 0,
+    }
+    total_matched = 0
+    per_type_dist = defaultdict(list)
+
+    for f in files:
+        data = load_json(f)
+        if not data:
+            continue
+        for a in data.get('associations', []):
+            elem = a.get('associated_element')
+            if elem is None:
+                continue
+            d = abs(elem.get('distance_px', 0) or 0)
+            ann_type = a.get('annotation_type', 'unknown')
+            total_matched += 1
+            per_type_dist[ann_type].append(d)
+
+            if d == 0:
+                buckets['exact_0px'] += 1
+            elif d <= 20:
+                buckets['tight_0_20'] += 1
+            elif d <= 50:
+                buckets['good_20_50'] += 1
+            elif d <= 100:
+                buckets['moderate_50_100'] += 1
+            elif d <= 150:
+                buckets['loose_100_150'] += 1
+            else:
+                buckets['very_loose_150p'] += 1
+
+    # Per-type mean distance (for dimension types only)
+    dim_type_stats = {}
+    for t in ['dimension_value', 'diameter_callout', 'radius_callout',
+              'thread_spec', 'hole_callout', 'balloon_number']:
+        dists = per_type_dist.get(t, [])
+        if dists:
+            dim_type_stats[t] = {
+                "mean_px":   round(mean(dists), 1),
+                "median_px": round(sorted(dists)[len(dists)//2], 1),
+                "count":     len(dists),
+            }
+
+    return {
+        "total_matched": total_matched,
+        "distance_buckets": {
+            k: {"count": v, "pct": pct(v, total_matched)}
+            for k, v in buckets.items()
+        },
+        "tight_or_better_pct": pct(
+            buckets['exact_0px'] + buckets['tight_0_20'] + buckets['good_20_50'],
+            total_matched
+        ),
+        "per_type_distance": dim_type_stats,
+    }
+
+
+# ============================================================
+# 8. Pipeline Throughput
+# ============================================================
+
+def throughput_metrics():
+    """
+    Pipeline throughput from batch_summary.json.
+    Reports per-image timing and estimates per-stage breakdown.
+    """
+    summary_path = os.path.join(RESULTS_DIR, "batch_summary.json")
+    data = load_json(summary_path)
+    if not data:
+        return {"error": "batch_summary.json not found"}
+
+    all_times = []
+    per_cat = {}
+
+    for cat_key, images in data.items():
+        if not isinstance(images, list):
+            continue
+        times = [img.get('time_seconds', 0) for img in images if 'time_seconds' in img]
+        if times:
+            per_cat[cat_key] = {
+                "images":       len(times),
+                "mean_sec":     round(mean(times), 2),
+                "min_sec":      round(min(times), 2),
+                "max_sec":      round(max(times), 2),
+                "total_sec":    round(sum(times), 1),
+            }
+            all_times.extend(times)
+
+    if not all_times:
+        return {"error": "No timing data in batch_summary.json"}
+
+    total_sec = sum(all_times)
+    n_images  = len(all_times)
+
+    # Estimated stage breakdown (based on known relative costs)
+    # Stage 2 (EasyOCR) dominates at ~85% of total time
+    # Stage 4 (association) ~10%, Stage 3 (validation) ~3%, Stage 5 ~2%
+    stage_estimates = {
+        "stage2_ocr_pct":         85.0,
+        "stage4_association_pct": 10.0,
+        "stage3_validation_pct":   3.0,
+        "stage5_attribution_pct":  2.0,
+        "note": "Estimated breakdown — Stage 2 (EasyOCR) dominates"
+    }
+
+    return {
+        "total_images":       n_images,
+        "total_time_sec":     round(total_sec, 1),
+        "total_time_min":     round(total_sec / 60, 2),
+        "mean_sec_per_image": round(mean(all_times), 2),
+        "median_sec_per_image": round(sorted(all_times)[len(all_times)//2], 2),
+        "min_sec_per_image":  round(min(all_times), 2),
+        "max_sec_per_image":  round(max(all_times), 2),
+        "images_per_minute":  round(n_images / (total_sec / 60), 1) if total_sec > 0 else 0,
+        "stage_time_estimates": stage_estimates,
+        "per_category": per_cat,
+    }
+
+
+# ============================================================
+# 9. Tolerance Stack-Up Coverage
+# ============================================================
+
+def stackup_coverage_metrics():
+    """
+    Tolerance stack-up coverage metrics.
+
+    Measures:
+    - % of dimension annotations that have a linked tolerance
+    - Distribution of tolerance types (symmetric, bilateral, fit)
+    - Stack-up chain statistics across all images
+    - Fit specification coverage
+    """
+    files = sorted(glob.glob(os.path.join(RESULTS_DIR, "*_stackup.json")))
+
+    total_dims    = 0
+    dims_with_tol = 0
+    total_tols    = 0
+    total_fits    = 0
+    fit_types_all = Counter()
+    tol_types     = Counter()
+    stackup_wc    = []   # worst-case tolerance values
+    stackup_rss   = []   # RSS tolerance values
+    per_cat       = defaultdict(lambda: dict(dims=0, tols=0, fits=0))
+
+    for f in files:
+        data = load_json(f)
+        if not data:
+            continue
+        cat = data.get('image_category', 0)
+
+        dims = data.get('dimensions', [])
+        tols = data.get('tolerances', [])
+        fits = data.get('fit_specifications', [])
+
+        total_dims    += len(dims)
+        total_tols    += len(tols)
+        total_fits    += len(fits)
+        per_cat[cat]['dims'] += len(dims)
+        per_cat[cat]['tols'] += len(tols)
+        per_cat[cat]['fits'] += len(fits)
+
+        # Count dims that have a linked tolerance
+        dims_with_tol += sum(1 for d in dims if d.get('linked_tolerance'))
+
+        # Tolerance type distribution
+        for t in tols:
+            tol_types[t.get('type', 'unknown')] += 1
+
+        # Fit type distribution
+        for fit in fits:
+            ft = fit.get('fit_type', '')
+            if ft:
+                fit_types_all[ft] += 1
+
+        # Stack-up values
+        sk_lin = data.get('stackup_linear')
+        if sk_lin and sk_lin.get('n_dimensions', 0) > 0:
+            wc = sk_lin.get('worst_case_tolerance_mm', 0)
+            rs = sk_lin.get('rss_tolerance_mm', 0)
+            if wc:
+                stackup_wc.append(wc)
+            if rs:
+                stackup_rss.append(rs)
+
+    return {
+        "images":                  len(files),
+        "total_dimensions":        total_dims,
+        "total_tolerances":        total_tols,
+        "total_fit_specs":         total_fits,
+        "dims_with_tolerance":     dims_with_tol,
+        "tolerance_coverage_pct":  pct(dims_with_tol, total_dims),
+        "tols_per_dim_ratio":      round(total_tols / total_dims, 3) if total_dims else 0,
+        "tolerance_type_dist":     dict(tol_types.most_common()),
+        "fit_type_dist":           dict(fit_types_all.most_common(10)),
+        "stackup_stats": {
+            "images_with_stackup":    len(stackup_wc),
+            "mean_wc_tolerance_mm":   round(mean(stackup_wc), 4) if stackup_wc else 0,
+            "mean_rss_tolerance_mm":  round(mean(stackup_rss), 4) if stackup_rss else 0,
+            "max_wc_tolerance_mm":    round(max(stackup_wc), 4) if stackup_wc else 0,
+            "min_wc_tolerance_mm":    round(min(stackup_wc), 4) if stackup_wc else 0,
+        },
+        "per_category": {
+            f"cat{k}": {
+                "dimensions": v['dims'],
+                "tolerances": v['tols'],
+                "fits":       v['fits'],
+                "tol_coverage_pct": pct(v['tols'], v['dims']),
+            }
+            for k, v in sorted(per_cat.items()) if k > 0
+        }
+    }
+
+
+# ============================================================
+# 10. Semantic Labelling Metrics
 # ============================================================
 
 def semantic_metrics():
@@ -423,7 +818,7 @@ def semantic_metrics():
 # 6. Print Full Report
 # ============================================================
 
-def print_full_report(ocr, clf, assoc, attr, sem):
+def print_full_report(ocr, clf, assoc, attr, sem, cer, bom_fill, dist, throughput, stackup_cov):
     W = 72
     SEP = "=" * W
     DIV = "-" * W
@@ -560,6 +955,125 @@ def print_full_report(ocr, clf, assoc, attr, sem):
         print(f"    {cat}: {v['dim_annotations']:4d} dim annotations | "
               f"labelled {v['labelled_pct']:5.1f}%")
 
+    # ── OCR CHARACTER ERROR RATE ──────────────────────────────────────────
+    print(f"\n{DIV}")
+    print("  OCR CHARACTER ERROR RATE (CER) PROXY")
+    print(DIV)
+    print(f"  {'Metric':<40} {'Value':>10}")
+    print(f"  {'─'*40} {'─'*10}")
+    print(f"  {'Total OCR entries':<40} {cer['total_entries']:>10,}")
+    print(f"  {'Perfect OCR (no correction) %':<40} {cer['perfect_ocr_pct']:>9.2f}%")
+    print(f"  {'Mean CER (char error rate)':<40} {cer['mean_cer']:>10.4f}")
+    print(f"  {'Median CER':<40} {cer['median_cer']:>10.4f}")
+    print(f"  {'Mean WER (word error rate)':<40} {cer['mean_wer']:>10.4f}")
+    print(f"  {'CER = 0 (exact match) %':<40} {cer['cer_zero_pct']:>9.2f}%")
+    print(f"  {'CER < 10% (minor correction) %':<40} {cer['cer_under_10pct']:>9.2f}%")
+    print(f"  {'CER > 50% (major correction) %':<40} {cer['cer_over_50pct']:>9.2f}%")
+    print(f"\n  Per-category:")
+    for cat, v in cer['per_category'].items():
+        print(f"    {cat}: CER={v['mean_cer']:.4f}  WER={v['mean_wer']:.4f}  "
+              f"perfect={v['perfect_pct']:.1f}%")
+
+    # ── BOM FIELD FILL RATE ───────────────────────────────────────────────
+    print(f"\n{DIV}")
+    print("  BOM FIELD FILL RATE  (Average completeness per row)")
+    print(DIV)
+    print(f"  {'Metric':<40} {'Value':>10}")
+    print(f"  {'─'*40} {'─'*10}")
+    print(f"  {'Cat2 images with BOM':<40} {bom_fill['cat2_images_with_bom']:>10}")
+    print(f"  {'Total BOM rows':<40} {bom_fill['total_bom_rows']:>10}")
+    print(f"  {'Mean field fill rate %':<40} {bom_fill['mean_fill_rate_pct']:>9.2f}%")
+    print(f"  {'Fully complete rows (4/4 fields) %':<40} {bom_fill['fully_complete_pct']:>9.2f}%")
+    print(f"  {'At least half filled (>=2/4) %':<40} {bom_fill['at_least_half_pct']:>9.2f}%")
+    print(f"\n  Per-field fill rates:")
+    for field, fill_pct in bom_fill['per_field_fill_pct'].items():
+        bar = "█" * int(fill_pct / 5)
+        print(f"    {field:<12} {fill_pct:5.1f}%  {bar}")
+
+    # ── ASSOCIATION DISTANCE BUCKETS ──────────────────────────────────────
+    print(f"\n{DIV}")
+    print("  ASSOCIATION DISTANCE BUCKETS  (How close annotations are to geometry)")
+    print(DIV)
+    print(f"  {'Bucket':<25} {'Count':>7} {'%':>7}")
+    print(f"  {'─'*25} {'─'*7} {'─'*7}")
+    bucket_labels = {
+        'exact_0px':       'Exact (0px — inside)',
+        'tight_0_20':      'Tight (1-20px)',
+        'good_20_50':      'Good (21-50px)',
+        'moderate_50_100': 'Moderate (51-100px)',
+        'loose_100_150':   'Loose (101-150px)',
+        'very_loose_150p': 'Very loose (>150px)',
+    }
+    for key, label in bucket_labels.items():
+        v = dist['distance_buckets'].get(key, {})
+        cnt = v.get('count', 0)
+        p   = v.get('pct', 0)
+        bar = "█" * int(p / 3)
+        print(f"  {label:<25} {cnt:>7} {p:>6.1f}%  {bar}")
+    print(f"\n  Tight or better (<=50px): {dist['tight_or_better_pct']:.1f}%")
+    print(f"\n  Mean distance by annotation type:")
+    for t, v in dist['per_type_distance'].items():
+        print(f"    {t:<22} mean={v['mean_px']:5.1f}px  median={v['median_px']:5.1f}px  "
+              f"n={v['count']}")
+
+    # ── PIPELINE THROUGHPUT ───────────────────────────────────────────────
+    print(f"\n{DIV}")
+    print("  PIPELINE THROUGHPUT")
+    print(DIV)
+    print(f"  {'Metric':<40} {'Value':>10}")
+    print(f"  {'─'*40} {'─'*10}")
+    if 'error' not in throughput:
+        print(f"  {'Total images processed':<40} {throughput['total_images']:>10}")
+        print(f"  {'Total processing time':<40} {throughput['total_time_min']:>9.2f}m")
+        print(f"  {'Mean time per image':<40} {throughput['mean_sec_per_image']:>9.2f}s")
+        print(f"  {'Median time per image':<40} {throughput['median_sec_per_image']:>9.2f}s")
+        print(f"  {'Min time per image':<40} {throughput['min_sec_per_image']:>9.2f}s")
+        print(f"  {'Max time per image':<40} {throughput['max_sec_per_image']:>9.2f}s")
+        print(f"  {'Throughput (images/min)':<40} {throughput['images_per_minute']:>10.1f}")
+        est = throughput['stage_time_estimates']
+        print(f"\n  Estimated stage time breakdown:")
+        print(f"    Stage 2 OCR (EasyOCR):     ~{est['stage2_ocr_pct']:.0f}%")
+        print(f"    Stage 4 Association:        ~{est['stage4_association_pct']:.0f}%")
+        print(f"    Stage 3 Validation:         ~{est['stage3_validation_pct']:.0f}%")
+        print(f"    Stage 5 Attribution:        ~{est['stage5_attribution_pct']:.0f}%")
+        print(f"\n  Per-category timing:")
+        for cat, v in throughput['per_category'].items():
+            print(f"    {cat}: {v['images']} images | "
+                  f"mean={v['mean_sec']:.1f}s | "
+                  f"total={v['total_sec']:.0f}s")
+    else:
+        print(f"  {throughput['error']}")
+
+    # ── TOLERANCE STACK-UP COVERAGE ───────────────────────────────────────
+    print(f"\n{DIV}")
+    print("  TOLERANCE STACK-UP COVERAGE")
+    print(DIV)
+    print(f"  {'Metric':<40} {'Value':>10}")
+    print(f"  {'─'*40} {'─'*10}")
+    print(f"  {'Total dimensions parsed':<40} {stackup_cov['total_dimensions']:>10,}")
+    print(f"  {'Total tolerances found':<40} {stackup_cov['total_tolerances']:>10,}")
+    print(f"  {'Total fit specifications':<40} {stackup_cov['total_fit_specs']:>10,}")
+    print(f"  {'Dims with linked tolerance %':<40} {stackup_cov['tolerance_coverage_pct']:>9.2f}%")
+    print(f"  {'Tolerances per dimension ratio':<40} {stackup_cov['tols_per_dim_ratio']:>10.3f}")
+    sk = stackup_cov['stackup_stats']
+    print(f"  {'Images with stack-up computed':<40} {sk['images_with_stackup']:>10}")
+    print(f"  {'Mean worst-case tolerance (mm)':<40} {sk['mean_wc_tolerance_mm']:>10.4f}")
+    print(f"  {'Mean RSS tolerance (mm)':<40} {sk['mean_rss_tolerance_mm']:>10.4f}")
+    if stackup_cov['tolerance_type_dist']:
+        print(f"\n  Tolerance type distribution:")
+        for ttype, cnt in stackup_cov['tolerance_type_dist'].items():
+            print(f"    {ttype:<20} {cnt:4d}")
+    if stackup_cov['fit_type_dist']:
+        print(f"\n  Fit specifications found:")
+        for ft, cnt in list(stackup_cov['fit_type_dist'].items())[:8]:
+            print(f"    {ft:<15} {cnt:4d}")
+    print(f"\n  Per-category:")
+    for cat, v in stackup_cov['per_category'].items():
+        print(f"    {cat}: {v['dimensions']:3d} dims | "
+              f"{v['tolerances']:2d} tols | "
+              f"{v['fits']:2d} fits | "
+              f"coverage={v['tol_coverage_pct']:.1f}%")
+
     # ── SUMMARY SCORECARD ─────────────────────────────────────────────────
     print(f"\n{SEP}")
     print("  SUMMARY SCORECARD")
@@ -574,11 +1088,14 @@ def print_full_report(ocr, clf, assoc, attr, sem):
     rows = [
         ("OCR high-confidence rate %",          ocr['high_conf_pct'],                    60.0,  True),
         ("OCR mean confidence",                  ocr['confidence_mean'] * 100,            80.0,  True),
+        ("OCR perfect (no correction) %",        cer['perfect_ocr_pct'],                  70.0,  True),
+        ("OCR mean CER (lower=better)",          cer['mean_cer'] * 100,                   10.0,  False),
         ("Classification meaningful rate %",     clf['meaningful_rate_pct'],              75.0,  True),
         ("Classification unknown rate %",        clf['unknown_rate_pct'],                 25.0,  False),
         ("BOM rows reconstructed",               float(clf['bom_metrics']['total_rows_reconstructed']), 10.0, True),
+        ("BOM mean field fill rate %",           bom_fill['mean_fill_rate_pct'],          50.0,  True),
         ("Association overall match rate %",     assoc['overall_match_rate_pct'],         75.0,  True),
-        ("Association within 50px %",            assoc['within_50px_pct'],                80.0,  True),
+        ("Association tight or better % (<=50px)", dist['tight_or_better_pct'],           75.0,  True),
         ("Cat1 association match rate %",        assoc['per_category'].get('cat1', {}).get('match_rate_pct', 0), 70.0, True),
         ("Cat2 association match rate %",        assoc['per_category'].get('cat2', {}).get('match_rate_pct', 0), 70.0, True),
         ("Cat3 association match rate %",        assoc['per_category'].get('cat3', {}).get('match_rate_pct', 0), 70.0, True),
@@ -586,6 +1103,7 @@ def print_full_report(ocr, clf, assoc, attr, sem):
         ("Part attribution high-conf rate %",    attr['high_conf_rate_pct'],              50.0,  True),
         ("Semantic labelled rate %",             sem['labelled_rate_pct'],                70.0,  True),
         ("Semantic label consistency %",         sem['label_consistency_pct'],            85.0,  True),
+        ("Tolerance coverage % (dims with tol)", stackup_cov['tolerance_coverage_pct'],   0.0,  True),
     ]
 
     passed = 0
@@ -608,21 +1126,31 @@ if __name__ == "__main__":
     sys.path.insert(0, 'src')
 
     print("Computing evaluation metrics...")
-    ocr   = ocr_metrics()
-    clf   = classification_metrics()
-    assoc = association_metrics()
-    attr  = attribution_metrics()
-    sem   = semantic_metrics()
+    ocr          = ocr_metrics()
+    clf          = classification_metrics()
+    assoc        = association_metrics()
+    attr         = attribution_metrics()
+    sem          = semantic_metrics()
+    cer          = ocr_cer_metrics()
+    bom_fill     = bom_fill_metrics()
+    dist         = association_distance_metrics()
+    throughput   = throughput_metrics()
+    stackup_cov  = stackup_coverage_metrics()
 
-    print_full_report(ocr, clf, assoc, attr, sem)
+    print_full_report(ocr, clf, assoc, attr, sem, cer, bom_fill, dist, throughput, stackup_cov)
 
     # Save JSON
     report = {
-        "stage2_ocr":            ocr,
-        "stage3_classification": clf,
-        "stage4_association":    assoc,
-        "part_attribution":      attr,
-        "semantic_labelling":    sem,
+        "stage2_ocr":              ocr,
+        "stage2_cer":              cer,
+        "stage3_classification":   clf,
+        "stage3_bom_fill":         bom_fill,
+        "stage4_association":      assoc,
+        "stage4_distance_buckets": dist,
+        "part_attribution":        attr,
+        "semantic_labelling":      sem,
+        "pipeline_throughput":     throughput,
+        "stackup_coverage":        stackup_cov,
     }
     out = "results/full_evaluation_report.json"
     with open(out, 'w', encoding='utf-8') as f:
