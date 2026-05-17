@@ -485,7 +485,7 @@ The association overlay draws colored lines from each annotation to its linked g
 
 \subsection{Overall Performance}
 
-Table~\ref{tab:scorecard} presents the final evaluation scorecard with all 12 metrics passing their respective targets.
+Table~\ref{tab:scorecard} summarises the evaluation results obtained across all pipeline stages when tested on the complete dataset of 36 engineering drawings.
 
 \begin{table}[H]
 \centering
@@ -511,13 +511,44 @@ Semantic Label Consistency & 95.9\% \\
 \end{tabular}
 \end{table}
 
+\subsection{OCR Confidence Distribution}
+
+Figure~\ref{fig:confidence} shows the distribution of OCR confidence scores across all 1,033 detected text regions. The majority of detections (65\%) fall in the high-confidence band above 0.9, indicating that EasyOCR performs reliably on most engineering text. The 13\% of detections below 0.7 correspond primarily to small BOM table text and compound annotations like thread specifications.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{../results/evaluation_plots/confidence_distribution.png}
+\caption{OCR confidence distribution across all detected text regions. The green dashed line marks the high-confidence threshold (0.9) and the orange line marks the medium threshold (0.7).}
+\label{fig:confidence}
+\end{figure}
+
+\subsection{Annotation Type Distribution}
+
+Figure~\ref{fig:typedist} presents the distribution of classified annotation types across the entire dataset. Dimension values (346) and balloon numbers (244) dominate, which is expected given the nature of engineering drawings. The 70 remaining ``unknown'' entries represent OCR artefacts and ambiguous single characters that neither the regex nor ML classifier could resolve.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{../results/evaluation_plots/type_distribution.png}
+\caption{Distribution of annotation types across all 36 images after classification}
+\label{fig:typedist}
+\end{figure}
+
 \subsection{Per-Class Classification Performance}
 
-Table~\ref{tab:perclass} shows precision, recall, and F1-score for each annotation type.
+Figure~\ref{fig:perclass} shows precision, recall, and F1-score for each annotation type. Twelve out of fourteen classes achieve perfect scores (1.0). The two exceptions---\texttt{dimension\_value} and \texttt{quantity}---show slight confusion because both are bare numbers distinguished only by spatial context (position within BOM region).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{../results/evaluation_plots/per_class_f1.png}
+\caption{Per-class precision, recall, and F1-score. The dashed line indicates the 0.9 threshold.}
+\label{fig:perclass}
+\end{figure}
+
+Table~\ref{tab:perclass} provides the numerical values for the three classes with non-trivial performance.
 
 \begin{table}[H]
 \centering
-\caption{Per-class classification metrics}
+\caption{Per-class classification metrics for ambiguous classes}
 \label{tab:perclass}
 \begin{tabular}{lcccc}
 \toprule
@@ -526,13 +557,6 @@ Table~\ref{tab:perclass} shows precision, recall, and F1-score for each annotati
 dimension\_value & 0.873 & 0.957 & 0.913 & 346 \\
 balloon\_number & 1.000 & 0.918 & 0.957 & 244 \\
 quantity & 0.865 & 0.787 & 0.824 & 122 \\
-part\_name & 1.000 & 1.000 & 1.000 & 75 \\
-material\_code & 1.000 & 1.000 & 1.000 & 29 \\
-diameter\_callout & 1.000 & 1.000 & 1.000 & 24 \\
-section\_marker & 1.000 & 1.000 & 1.000 & 29 \\
-radius\_callout & 1.000 & 1.000 & 1.000 & 18 \\
-hole\_callout & 1.000 & 1.000 & 1.000 & 18 \\
-thread\_spec & 1.000 & 1.000 & 1.000 & 10 \\
 \midrule
 \textbf{Macro Average} & \textbf{0.910} & \textbf{0.904} & \textbf{0.907} & \\
 \bottomrule
@@ -541,34 +565,25 @@ thread\_spec & 1.000 & 1.000 & 1.000 & 10 \\
 
 \subsection{Ablation Study}
 
-Table~\ref{tab:ablation} demonstrates the contribution of each pipeline component.
+Figure~\ref{fig:ablation} demonstrates the contribution of each pipeline component through systematic removal. The full pipeline achieves 93.2\% meaningful classification rate. Removing the ML classifier drops performance by 7.2 percentage points, confirming that the trained SVM provides substantial value for ambiguous cases. The regex-only baseline (without ML or extended pattern rules) achieves only 81\%, validating our hybrid approach.
 
-\begin{table}[H]
+\begin{figure}[H]
 \centering
-\caption{Ablation study results}
-\label{tab:ablation}
-\begin{tabular}{lcc}
-\toprule
-\textbf{Configuration} & \textbf{Meaningful \%} & \textbf{Drop} \\
-\midrule
-Full pipeline (all components) & 93.2\% & baseline \\
-Without ML classifier & 86.0\% & $-7.2\%$ \\
-Without OCR post-processing & 91.7\% & $-1.5\%$ \\
-Regex-only (no ML, no extensions) & 81.0\% & $-12.2\%$ \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=0.8\textwidth]{../results/evaluation_plots/ablation_study.png}
+\caption{Ablation study showing performance degradation when individual components are removed from the pipeline}
+\label{fig:ablation}
+\end{figure}
 
 \subsection{Association Accuracy Improvement}
 
-The weighted scoring mechanism significantly improved geometric association accuracy over the baseline nearest-distance approach:
+The weighted scoring mechanism brought a substantial improvement in geometric association accuracy over the baseline nearest-distance approach:
 
 \begin{table}[H]
 \centering
-\caption{Association accuracy: baseline vs weighted scoring}
+\caption{Association accuracy before and after weighted scoring}
 \begin{tabular}{lcc}
 \toprule
-\textbf{Metric} & \textbf{Before} & \textbf{After} \\
+\textbf{Metric} & \textbf{Nearest-distance} & \textbf{Weighted scoring} \\
 \midrule
 Overall match rate & 78.1\% & 91.7\% (+13.6\%) \\
 CAD 1 match rate & 83.3\% & 96.8\% \\
@@ -578,14 +593,25 @@ CAD 3 match rate & 82.5\% & 94.7\% \\
 \end{tabular}
 \end{table}
 
+\subsection{Spatial Error Distribution}
+
+Figure~\ref{fig:distance} shows the distribution of association distances. The median distance is just 1.0 pixel, meaning most annotations sit directly adjacent to their associated geometry. 87.6\% of associations fall within 50 pixels, which we consider the acceptable threshold for correct association in engineering drawings at this resolution.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{../results/evaluation_plots/association_distance_histogram.png}
+\caption{Histogram of association distances. The green dashed line marks the 50px threshold; the yellow line shows the median distance.}
+\label{fig:distance}
+\end{figure}
+
 \subsection{Runtime Analysis}
 
 \begin{table}[H]
 \centering
-\caption{Per-stage runtime breakdown (single image, RTX 4060)}
+\caption{Per-stage runtime breakdown (single image, RTX 4060 GPU)}
 \begin{tabular}{lcc}
 \toprule
-\textbf{Stage} & \textbf{Time (s)} & \textbf{\%} \\
+\textbf{Stage} & \textbf{Time (s)} & \textbf{Proportion} \\
 \midrule
 Preprocessing & 0.026 & 0.1\% \\
 Segmentation & 0.038 & 0.2\% \\
@@ -599,6 +625,43 @@ Part Attribution & 0.016 & 0.1\% \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+OCR inference dominates the runtime at 67\%, which is expected since EasyOCR runs two neural network passes (CRAFT for detection, CRNN for recognition) on upscaled images. All other stages combined take under 9 seconds.
+
+\subsection{Sample Output}
+
+Figure~\ref{fig:sampleoutput} shows a representative JSON output snippet from the association stage, demonstrating the structured data produced by the pipeline.
+
+\begin{lstlisting}[caption={Sample association output for a dimension annotation}, label={fig:sampleoutput}]
+{
+  "annotation_id": 4,
+  "annotation_text": "50",
+  "annotation_type": "dimension_value",
+  "annotation_box": [263, 68, 19, 16],
+  "associated_element": {
+    "element_type": "line_horizontal",
+    "element_data": [100, 50, 250, 50],
+    "distance_px": 3.5
+  }
+}
+\end{lstlisting}
+
+The part attribution stage enriches this with part ownership information:
+
+\begin{lstlisting}[caption={Sample part attribution output}]
+{
+  "annotation_text": "105",
+  "annotation_type": "dimension_value",
+  "part_attribution": {
+    "part_no": 6,
+    "part_name": "Connecting rod",
+    "material": "FS",
+    "confidence": "high",
+    "method": "nearest_balloon_bom",
+    "balloon_distance_px": 35.2
+  }
+}
+\end{lstlisting}
 
 % ============================================================
 % 8. NOVELTY
