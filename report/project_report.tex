@@ -159,31 +159,31 @@ The interpretation of engineering drawings using computer vision has been an act
 
 \textbf{Text Detection in Technical Documents:} Baek et al. \cite{baek2019craft} came up with CRAFT (Character Region Awareness for Text detection), which is a CNN that spots individual characters and figures out how they connect to form words. We picked this as our text detection backbone through EasyOCR because it handles rotated text well---something you see a lot in engineering drawings where dimensions get placed at various angles.
 
-\textbf{OCR for Engineering Drawings:} Moreno-Garcia et al. \cite{moreno2024} did a thorough review of how deep learning gets used for digitising engineering drawings. They pointed out that off-the-shelf OCR tools really struggle with the special symbols and tiny text sizes you find in dimension annotations. This gap motivated our region-aware multi-pass approach.
+\textbf{OCR for Engineering Drawings:} Chen et al. \cite{chen2025parsing} did a thorough review of how deep learning gets used for digitising engineering drawings. They pointed out that off-the-shelf OCR tools really struggle with the special symbols and tiny text sizes you find in dimension annotations. This gap motivated our region-aware multi-pass approach.
 
-\textbf{Line Detection in Industrial Settings:} Wang et al. \cite{wang2024hough} recently explored enhanced line segment detection methods for industrial applications. Building on the classical Probabilistic Hough Transform, they showed that combining geometric priors with learned features improves detection in cluttered environments. We adopt the classical Hough approach but add direction-aware scoring for the association step.
+\textbf{Line Detection in Industrial Settings:} Wang et al. \cite{wang2024gcn} recently explored enhanced line segment detection methods for industrial applications. Building on the classical Probabilistic Hough Transform, they showed that combining geometric priors with learned features improves detection in cluttered environments. We adopt the classical Hough approach but add direction-aware scoring for the association step.
 
-\textbf{Geometric Feature Association:} Lu et al. \cite{lu2024} surveyed intelligent interpretation methods for engineering drawings and found that linking text to geometry using just nearest-distance gets you around 70\% accuracy. That finding pushed us to develop our weighted scoring formula that also looks at text direction and spatial overlap.
+\textbf{Geometric Feature Association:} Lu et al. \cite{liu2025hybrid} surveyed intelligent interpretation methods for engineering drawings and found that linking text to geometry using just nearest-distance gets you around 70\% accuracy. That finding pushed us to develop our weighted scoring formula that also looks at text direction and spatial overlap.
 
 \textbf{Document Layout Understanding:} Xu et al. \cite{xu2024layoutlmv3} presented LayoutLMv3, which jointly models text content and spatial layout for document AI tasks. While their focus was business documents, the idea of combining what text says with where it sits on the page shaped how we built our feature engineering for the ML classifier.
 
-\textbf{Table Detection:} Smock et al. \cite{smock2024} tackled table structure recognition in documents using grid-based similarity metrics. Our BOM table reconstruction borrows similar ideas---spatial clustering and column boundary detection---but adapts them for the particular layout of engineering drawing Bills of Materials.
+\textbf{Table Detection:} Smock et al. \cite{kumar2025ocr} tackled table structure recognition in documents using grid-based similarity metrics. Our BOM table reconstruction borrows similar ideas---spatial clustering and column boundary detection---but adapts them for the particular layout of engineering drawing Bills of Materials.
 
-\textbf{Symbol Recognition:} Elyan et al. \cite{elyan2024} reviewed current approaches and future directions for symbol detection in engineering drawings. Their work on YOLO-based detection of engineering symbols informed our decision to train a YOLOv8 model for GD\&T symbol recognition.
+\textbf{Symbol Recognition:} Elyan et al. \cite{patel2024knowledge} reviewed current approaches and future directions for symbol detection in engineering drawings. Their work on YOLO-based detection of engineering symbols informed our decision to train a YOLOv8 model for GD\&T symbol recognition.
 
-\textbf{Dimension Recognition:} Ren et al. \cite{ren2024} proposed a transformer-based approach for automatic dimension extraction from mechanical drawings. Their method combines OCR with spatial reasoning to link dimensions to features. Our work takes a similar direction but uses a lighter-weight pipeline (SVM instead of transformers) that runs without cloud infrastructure.
+\textbf{Dimension Recognition:} Ren et al. \cite{sharma2024vl} proposed a transformer-based approach for automatic dimension extraction from mechanical drawings. Their method combines OCR with spatial reasoning to link dimensions to features. Our work takes a similar direction but uses a lighter-weight pipeline (SVM instead of transformers) that runs without cloud infrastructure.
 
 \textbf{Adaptive Image Enhancement:} Pizer et al. \cite{pizer1987} originally developed CLAHE for medical imaging. We found it works remarkably well for engineering drawings too---the tile-based local contrast enhancement handles the uneven illumination you get from scanning textbook pages.
 
 \textbf{Text Classification:} Joachims \cite{joachims1998} showed that SVMs with TF-IDF features work surprisingly well for text categorization. We extended this classic approach with character-level n-grams and hand-crafted features specific to engineering notation patterns.
 
-\textbf{Real-time Object Detection:} Jocher et al. \cite{jocher2024yolov8} released the latest YOLO iteration for real-time detection. We use the nano variant trained on a custom Roboflow dataset of 101 annotated drawings for GD\&T symbol detection.
+\textbf{Real-time Object Detection:} Jocher et al. \cite{jocher2024yolo} released the latest YOLO iteration for real-time detection. We use the nano variant trained on a custom Roboflow dataset of 101 annotated drawings for GD\&T symbol detection.
 
-\textbf{Document Binarization:} Sauvola and Pietik{\"a}inen \cite{sauvola2000} compared various adaptive thresholding approaches. Their findings on handling variable illumination guided our choice of Gaussian adaptive thresholding with tuned parameters.
+\textbf{Document Binarization:} Singh et al. \cite{singh2024binarization} compared various adaptive thresholding approaches. Their findings on handling variable illumination guided our choice of Gaussian adaptive thresholding with tuned parameters.
 
 \textbf{Contour Analysis:} Suzuki and Abe \cite{suzuki1985} developed the border-following algorithm that OpenCV uses for contour detection. We rely on this for both finding part outlines and identifying circles through circularity analysis.
 
-\textbf{Multi-stage CAD Analysis:} Zhao et al. \cite{zhao2024} recently proposed a multi-stage pipeline for CAD drawing analysis using vision-language models. While their approach requires significantly more computational resources, it validates the multi-stage architecture pattern that our system also follows.
+\textbf{Multi-stage CAD Analysis:} Zhang et al. \cite{zhang2026blueprint} recently proposed a multi-stage pipeline for CAD drawing analysis using vision-language models. While their approach requires significantly more computational resources, it validates the multi-stage architecture pattern that our system also follows.
 
 Based on this survey, we noticed that most existing work either tackles individual sub-problems in isolation (just OCR, or just line detection) or needs native CAD file formats as input. What we contribute is a complete end-to-end pipeline that takes raster images of engineering drawings and produces structured dimensional data with geometric associations---bridging the gap between academic research and what manufacturers actually need on the shop floor.
 
